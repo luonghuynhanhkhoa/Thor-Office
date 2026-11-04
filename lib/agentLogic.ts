@@ -66,6 +66,9 @@ export function planByKeywords(request: string): AgentId[] {
     }
   }
 
+  // Đã nêu đích danh phòng nào thì CHỈ hỏi phòng đó (không kéo thêm AI phòng khác chỉ vì trùng từ khoá).
+  if (picked.size > 0 && !/tong quan|tat ca|toan bo|toan cong ty/.test(q)) return WORKERS.filter((id) => picked.has(id));
+
   for (const id of WORKERS) {
     if (LOGIC[id].keywords.some((k) => q.includes(k))) picked.add(id);
   }

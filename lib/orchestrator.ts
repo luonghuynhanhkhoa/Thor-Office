@@ -2,7 +2,11 @@ import { AGENTS, AGENT_BY_ID, DEPT_BY_ID, type AgentId, type AgentState, type Jo
 import { LOGIC, WORKERS, planByKeywords } from "@/lib/agentLogic";
 import { askModel, runnerMode } from "@/lib/runner";
 import { Ctx } from "@/lib/thorData";
+import { norm } from "@/lib/logicTypes";
 import { localAvailable } from "@/lib/thorFiles";
+import { matchDirect, focusLines, NO_MATCH } from "@/lib/answers";
+
+const OVERALL = /tong quan|tat ca|toan bo|toan cong ty/;
 import { detectTopics, resolvePeople } from "@/lib/lookup";
 import { lookupText } from "@/lib/lookup";
 
@@ -123,6 +127,8 @@ async function runWorker(job: Job, ctx: Ctx, agent: AgentId, task: string): Prom
     if (job.runner === "sim") {
       await sleep(jitter(1800, 3600));
       text = logic.sim!(data as never, task);
+      // câu hỏi có ý riêng → chỉ giữ dòng liên quan; báo cáo tổng quan thì giữ đủ
+      if (!OVERALL.test(norm(job.request))) text = focusLines(text, job.request) ?? NO_MATCH;
     } else {
       try {
         text = await askModel(
@@ -189,6 +195,37 @@ async function run(job: Job): Promise<void> {
     return;
   }
 
+  // 0b) Câu hỏi quen thuộc (các nút gợi ý + biến thể) → trả lời ĐÚNG trọng tâm, không kèm báo cáo bao quát của cả phòng.
+  const direct = matchDirect(job.request);
+  if (direct) {
+    job.plan = [{ agent: direct.agent, task: direct.task }];
+    set(job, "commander", { status: "done", task: `Giao ${AGENT_BY_ID[direct.agent].name}: ${direct.title}`, finishedAt: Date.now() });
+    log(job, "commander", `Câu hỏi cụ thể → chỉ giao ${AGENT_BY_ID[direct.agent].name}: ${direct.title}`);
+    job.phase = "working";
+    set(job, direct.agent, { status: "working", task: direct.title, startedAt: Date.now(), result: undefined, error: undefined });
+    let text: string;
+    try {
+      if (LOGIC[direct.agent].localOnly && !localAvailable()) {
+        text = "🖥️ Việc này cần đọc mã nguồn / git của Thor ngay trên máy anh nên bản chạy trên mạng chưa làm được. Mở bản trên máy (http://localhost:3300) để chạy.";
+      } else {
+        await sleep(jitter(700, 1400));
+        text = await direct.run(ctx);
+      }
+      set(job, direct.agent, { status: "done", result: text, finishedAt: Date.now() });
+    } catch (e) {
+      text = `⚠️ Không lấy được: ${(e as Error).message}`;
+      set(job, direct.agent, { status: "error", error: (e as Error).message, finishedAt: Date.now() });
+    }
+    job.phase = "composing";
+    set(job, "reporter", { status: "working", task: "Đang gửi kết quả…", startedAt: Date.now() });
+    await sleep(jitter(400, 800));
+    job.final = `## ${direct.title}\n${text}`;
+    set(job, "reporter", { status: "done", task: "Đã gửi kết quả", finishedAt: Date.now() });
+    job.phase = "done";
+    log(job, "reporter", "Hoàn tất.");
+    return;
+  }
+
   job.plan = await plan(job);
   if (job.plan.length === 0) {
     set(job, "commander", { status: "done", task: "Chưa rõ yêu cầu", finishedAt: Date.now() });
@@ -217,9 +254,21 @@ async function run(job: Job): Promise<void> {
   // 3) Báo cáo gộp
   job.phase = "composing";
   set(job, "reporter", { status: "working", task: "Đang gộp báo cáo…", startedAt: Date.now() });
+  const overall = OVERALL.test(norm(job.request));
   const parts = job.plan
     .map((p) => ({ p, s: job.agents[p.agent] }))
-    .filter(({ s }) => s.status === "done" || s.status === "error");
+    .filter(({ s }) => s.status === "done" || s.status === "error")
+    .filter(({ s }) => s.result !== NO_MATCH); // câu hỏi cụ thể: bỏ AI không có mục liên quan
+  if (parts.length === 0 && job.plan.length > 0 && job.plan.every((p) => job.agents[p.agent].result === NO_MATCH)) {
+    job.final =
+      `## ${job.request}\n` +
+      "Em chưa thấy mục nào trong dữ liệu khớp đúng câu hỏi này.\n" +
+      "- Anh nói rõ hơn một chút (tên người, mục cần xem), hoặc\n" +
+      "- gõ **“Báo cáo của Phòng …”** nếu muốn xem cả phòng, **“Tổng quan toàn công ty”** nếu muốn xem tất cả.";
+    set(job, "reporter", { status: "done", task: "Đã gửi kết quả", finishedAt: Date.now() });
+    job.phase = "done";
+    return;
+  }
   const body = parts
     .map(({ p, s }) => {
       const m = AGENT_BY_ID[p.agent];
@@ -234,8 +283,8 @@ async function run(job: Job): Promise<void> {
       .flatMap(({ s }) => (s.result ?? "").split("\n"))
       .filter((l) => l.trim().startsWith("- ⚠️"));
     final =
-      `## Báo cáo — ${job.request}\n\n` +
-      (warn.length ? `**Cần xử lý (${warn.length}):**\n${warn.join("\n")}\n\n---\n\n` : "") +
+      `## ${overall ? "Báo cáo — " : ""}${job.request}\n\n` +
+      (overall && warn.length ? `**Cần xử lý (${warn.length}):**\n${warn.join("\n")}\n\n---\n\n` : "") +
       body;
   } else {
     try {

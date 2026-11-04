@@ -12,7 +12,7 @@ import { formatVND, hhmmToMin, nowMinutesVN, todayKey, vnDateKey } from "@/lib/v
 export type Topic = "gio-truc" | "ca-hen" | "don" | "luong" | "qc";
 
 const ROLE_LABEL: Record<StaffFull["role"], string> = { reader: "Reader", saler: "Saler", qc: "QC" };
-const ROLE_WORDS = new Set(["reader", "saler", "qc", "nhan", "vien", "user", "ban"]);
+const ROLE_WORDS = new Set(["reader", "saler", "qc", "vien", "user"]);
 
 const tok = (s: string) => norm(s).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 
