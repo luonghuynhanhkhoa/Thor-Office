@@ -24,7 +24,8 @@ Thử nhanh: `?hour=8` (ép giờ trong ngày) và/hoặc `?fast=1` (AI đi lạ
 
 - Mỗi phòng là một không gian riêng: vách sau có **Tivi** hiện số liệu thật của phòng (`/api/tv`, làm mới mỗi phút; bấm Tivi để xem phóng to và giao phòng làm báo cáo chi tiết), vách kính bên trái, mở ra lối đi.
 - **Cửa quẹt thẻ** ở mép nam mỗi phòng + **đèn trước cửa**: 🟢 xanh = rảnh · 🟠 cam = đang nhận việc · 🔴 đỏ nhấp nháy = đang cấu hình/chỉnh sửa (cửa kính đóng, bảng **WORK IN PROCESS**, AI trong phòng ở lại bàn). Bật/tắt bằng nút 🛠 trong bảng ghi chú, hoặc `POST /api/maintenance {"dept":"acc","on":true}` (lưu ở `data/maintenance.json`, không commit).
-- Hàng dưới là 4 **phòng nghỉ**: Trà · Ăn · Gym · Nghỉ. AI rảnh tự đi lại (giờ VN: sáng cà phê/ăn sáng, trưa ăn rồi nghỉ, chiều tập gym) và về bàn ngay khi có việc.
+- **Mặt bằng: mỗi khu một công trình riêng, không liền kề** (cách nhau bằng lối đi + sân cây): hàng trên cùng Điều Hành · **Phòng Họp** (giữa: máy chiếu, tivi hội nghị, bàn 8 ghế, quầy đồ ăn thức uống, bảng trắng, máy in) · Trung Tâm Kiểm Soát; giữa sân là **Tổng Hành Dinh** (khu đặc biệt: cột kính, viền vàng, logo Thỏ trên sàn) với Nhân Sự và Kế Toán hai bên; Sale · QC · Reader mỗi phòng một góc; dưới cùng **quán Trà & Ăn** (kiểu quán hiện đại: quầy bar cà phê, bàn ăn, biển neon) và **Gym** đủ đồ (máy chạy bộ, tạ đơn, ghế đẩy tạ, giàn squat, máy cáp, xe đạp, bao đấm, thảm yoga, tủ đồ, gương); **Phòng Nghỉ** ở phía đông. Toạ độ ở `lib/agentsMeta.ts` (phòng ban) và `lib/layout.ts` (khu nghỉ/họp).
+- AI rảnh tự **tìm đường (A\*)** quanh các công trình tới khu nghỉ/họp theo giờ VN (sáng cà phê/ăn sáng, 9–10h30 họp đầu ngày, trưa ăn rồi nghỉ, 14–15h30 họp nhanh, chiều tập gym) và về bàn ngay khi có việc.
 - Bên trái có **ghi chú màu** theo phòng ban/nhiệm vụ + ý nghĩa đèn cửa; trong cảnh không có nhãn tên phòng hay nhãn từng AI cho đỡ rối. Bấm từng AI = xem việc của AI đó.
 
 ## 3 chế độ chạy AI (hiện ở góc trên-trái)
@@ -46,7 +47,7 @@ Biến môi trường: `AI_RUNNER`, `ANTHROPIC_MODEL`, `THOR_ENV_PATH` (xem `.en
 ## Kỹ thuật
 
 Next 16 (`cacheComponents`: không dùng `export const runtime`, route GET gọi `await connection()`), React 19, three + @react-three/fiber v9 + drei (camera trực giao). Không dùng drei `<Html>` (lỗi unmount root với React 19).
-Mặt bằng + đường đi của AI: `lib/layout.ts` (phòng nghỉ, chỗ ngồi/đứng, lối đi, chọn phòng theo giờ). Cảnh 3D: `components/Office3D.tsx`.
+Mặt bằng + đường đi của AI: `lib/layout.ts` (khu nghỉ/họp, chỗ ngồi/đứng, công trình, A*, chọn nơi đến theo giờ). Cảnh 3D: `components/Office3D.tsx` (người, AI tự đi lại, bàn), `components/Campus.tsx` (công trình, Tivi, cửa, sân), `components/sceneKit.tsx` (khối dựng).
 Logo: `node scripts/make-logo.cjs` (cắt từ `../Thor/logo-tho.jpg`).
 
 ## Ý định phát triển tiếp (chưa làm)

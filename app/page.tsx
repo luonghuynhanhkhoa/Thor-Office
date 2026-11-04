@@ -265,7 +265,7 @@ export default function Home() {
                 </li>
               ))}
             </ul>
-            <div className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">Phòng nghỉ</div>
+            <div className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">Khu nghỉ · họp (đứng riêng)</div>
             <ul className="space-y-1">
               {LOUNGES.map((l) => (
                 <li key={l.id} className="flex items-center gap-2 text-[11px] text-slate-600">

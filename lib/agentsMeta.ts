@@ -42,17 +42,24 @@ export type DeptMeta = {
   color: string;
   /** Tâm phòng trên mặt sàn [x, z]. */
   center: [number, number];
+  /** Kích thước nền phòng [rộng, sâu]. */
+  size: [number, number];
 };
 
+/**
+ * MẶT BẰNG: mỗi phòng là một khu RIÊNG, cách nhau bằng lối đi/sân cây (không liền kề).
+ * Hàng trên cùng: Điều Hành · (Phòng Họp ở giữa) · Trung Tâm Kiểm Soát. Giữa: Nhân Sự · Tổng Hành Dinh (đặc biệt, giữa sân) · Kế Toán.
+ * Dưới: Sale · QC · Reader. Dưới cùng: quán Trà & Ăn · Gym. Phòng nghỉ + Phòng họp: xem lib/layout.ts.
+ */
 export const DEPTS: DeptMeta[] = [
-  { id: "hr", name: "Phòng Nhân Sự", scope: "Quản lý người dùng · ghi nhận đăng nhập", color: "#38bdf8", center: [-10.5, -5.5] },
-  { id: "acc", name: "Phòng Kế Toán", scope: "Quản lý lương · kiểm tra công thức & chi tiêu", color: "#facc15", center: [-3.5, -5.5] },
-  { id: "sale", name: "Phòng Sale", scope: "Quản lý khách đã nhập đơn · vận hành Sale", color: "#fb923c", center: [3.5, -5.5] },
-  { id: "reader", name: "Phòng Reader", scope: "Quản lý đơn Reader · vận hành Reader", color: "#34d399", center: [10.5, -5.5] },
-  { id: "qc", name: "Phòng QC", scope: "Quản lý đơn QC · vận hành QC", color: "#a3e635", center: [-10.5, 5.5] },
-  { id: "ctrl", name: "Trung Tâm Kiểm Soát", scope: "Rà soát lỗi · bố cục · tối ưu · dọn rác", color: "#f472b6", center: [-3.5, 5.5] },
-  { id: "exec", name: "Phòng Điều Hành", scope: "Giao diện & tính năng của Admin", color: "#c084fc", center: [3.5, 5.5] },
-  { id: "hq", name: "Tổng Hành Dinh", scope: "Chỉ huy chia việc · Báo cáo gộp kết quả", color: "#fbbf24", center: [10.5, 5.5] },
+  { id: "hr", name: "Phòng Nhân Sự", scope: "Quản lý người dùng · ghi nhận đăng nhập", color: "#38bdf8", center: [-15, -3], size: [6, 5] },
+  { id: "acc", name: "Phòng Kế Toán", scope: "Quản lý lương · kiểm tra công thức & chi tiêu", color: "#facc15", center: [15, -3], size: [6, 5] },
+  { id: "sale", name: "Phòng Sale", scope: "Quản lý khách đã nhập đơn · vận hành Sale", color: "#fb923c", center: [-11, 8], size: [6, 5] },
+  { id: "reader", name: "Phòng Reader", scope: "Quản lý đơn Reader · vận hành Reader", color: "#34d399", center: [11, 8], size: [6, 5] },
+  { id: "qc", name: "Phòng QC", scope: "Quản lý đơn QC · vận hành QC", color: "#a3e635", center: [0, 10], size: [6, 5] },
+  { id: "ctrl", name: "Trung Tâm Kiểm Soát", scope: "Rà soát lỗi · bố cục · tối ưu · dọn rác", color: "#f472b6", center: [11, -12], size: [6, 5] },
+  { id: "exec", name: "Phòng Điều Hành", scope: "Giao diện & tính năng của Admin", color: "#c084fc", center: [-11, -12], size: [6, 5] },
+  { id: "hq", name: "Tổng Hành Dinh", scope: "Chỉ huy chia việc · Báo cáo gộp kết quả", color: "#fbbf24", center: [0, 0], size: [8, 7] },
 ];
 
 export const DEPT_BY_ID: Record<DeptId, DeptMeta> = Object.fromEntries(
@@ -73,7 +80,8 @@ export type AgentMeta = {
 
 const seat = (dept: DeptId, side: -1 | 1): [number, number] => {
   const [cx, cz] = DEPT_BY_ID[dept].center;
-  return [cx + side * 1.45, cz];
+  // Tổng Hành Dinh rộng hơn: bàn dời về phía sau để phía trước có chỗ cho logo Thỏ trên sàn.
+  return [cx + side * 1.45, dept === "hq" ? cz - 1.1 : cz];
 };
 
 function a(id: AgentId, dept: DeptId, name: string, branch: string, side: -1 | 1): AgentMeta {
