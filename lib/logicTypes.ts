@@ -10,6 +10,8 @@ import type { Ctx } from "@/lib/thorData";
 export type AgentLogic = {
   system: string;
   keywords: string[];
+  /** Việc cần đọc mã nguồn/git của Thor trên máy anh → bản chạy trên mạng không làm được. */
+  localOnly?: boolean;
   gather?: (ctx: Ctx) => Promise<unknown>;
   sim?: (data: never, task: string) => string;
 };

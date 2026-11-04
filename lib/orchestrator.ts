@@ -2,6 +2,7 @@ import { AGENTS, AGENT_BY_ID, DEPT_BY_ID, type AgentId, type AgentState, type Jo
 import { LOGIC, WORKERS, planByKeywords } from "@/lib/agentLogic";
 import { askModel, runnerMode } from "@/lib/runner";
 import { Ctx } from "@/lib/thorData";
+import { localAvailable } from "@/lib/thorFiles";
 
 /**
  * Bộ điều phối: Chỉ huy chia việc → các AI chuyên môn làm SONG SONG (mỗi AI một nhánh)
@@ -102,6 +103,16 @@ async function runWorker(job: Job, ctx: Ctx, agent: AgentId, task: string): Prom
   set(job, agent, { status: "working", task, startedAt: Date.now(), result: undefined, error: undefined });
   log(job, agent, `Nhận việc: ${task}`);
   try {
+    if (logic.localOnly && !localAvailable()) {
+      await sleep(jitter(600, 1200));
+      set(job, agent, {
+        status: "done",
+        result: "🖥️ Việc này cần đọc mã nguồn / git của Thor ngay trên máy anh nên bản chạy trên mạng chưa làm được. Mở bản trên máy (http://localhost:3300) để chạy.",
+        finishedAt: Date.now(),
+      });
+      log(job, agent, "Bỏ qua: chỉ chạy được trên máy anh.");
+      return;
+    }
     const data = await logic.gather!(ctx);
     let text: string;
     if (job.runner === "sim") {

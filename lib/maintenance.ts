@@ -7,7 +7,8 @@ import type { DeptId } from "@/lib/agentsMeta";
  * Lưu trong data/maintenance.json để còn nguyên khi khởi động lại; bật/tắt bằng nút 🛠 ở bảng ghi chú
  * hoặc gọi POST /api/maintenance {"dept":"acc","on":true}.
  */
-const FILE = path.join(process.cwd(), "data", "maintenance.json");
+// Trên Vercel ổ đĩa chỉ ghi được ở /tmp (tạm thời, mỗi máy chủ một bản) → bản mạng chỉ mang tính tạm.
+const FILE = process.env.VERCEL ? path.join("/tmp", "ai-office-maintenance.json") : path.join(process.cwd(), "data", "maintenance.json");
 const VALID = new Set<string>(["hr", "acc", "sale", "reader", "qc", "ctrl", "exec", "hq"]);
 
 export type MaintMap = Partial<Record<DeptId, boolean>>;

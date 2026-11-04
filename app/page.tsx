@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
@@ -98,7 +98,6 @@ export default function Home() {
   const [cases, setCases] = useState<CasesToday | null>(null);
   // Nhân vật chỉ hiện cho người chưa hết ca; người đã hết ca chỉ có trên bảng ca.
   const duty = useMemo(() => dutyAll.filter((s) => s.state !== "done"), [dutyAll]);
-  const jobId = useRef<string | null>(null);
 
   // Nhân viên Reader/Saler đang trong giờ trực (làm mới mỗi 30 giây). Thêm ?duty=demo vào địa chỉ để xem thử khi chưa có ai trực.
   useEffect(() => {
@@ -179,21 +178,6 @@ export default function Home() {
     };
   }, []);
 
-  // Hỏi trạng thái công việc đang chạy mỗi 0,8 giây cho tới khi xong.
-  useEffect(() => {
-    if (!job || job.phase === "done" || job.phase === "error") return;
-    const timer = setInterval(async () => {
-      if (!jobId.current) return;
-      try {
-        const res = await fetch(`/api/jobs/${jobId.current}`, { cache: "no-store" });
-        if (res.ok) setJob((await res.json()) as Job);
-      } catch {
-        /* thử lại ở nhịp sau */
-      }
-    }, 800);
-    return () => clearInterval(timer);
-  }, [job]);
-
   const send = useCallback(
     async (text: string) => {
       const request = text.trim();
@@ -206,14 +190,32 @@ export default function Home() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ request }),
         });
-        const data = (await res.json()) as { id?: string; error?: string };
-        if (!res.ok || !data.id) throw new Error(data.error ?? "Không giao được việc");
-        jobId.current = data.id;
-        const first = await fetch(`/api/jobs/${data.id}`, { cache: "no-store" });
-        setJob((await first.json()) as Job);
-        setInput("");
-        setSelected(null);
-        setPanelOpen(true);
+        if (!res.ok || !res.body) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(data.error ?? "Không giao được việc");
+        }
+        // Máy chủ phát trực tiếp trạng thái công việc (mỗi dòng 1 JSON) cho tới khi xong.
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        let started = false;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            setJob(JSON.parse(line) as Job);
+            if (!started) {
+              started = true;
+              setInput("");
+              setSelected(null);
+              setPanelOpen(true);
+            }
+          }
+        }
       } catch (e) {
         setError((e as Error).message);
       } finally {

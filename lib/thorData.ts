@@ -42,9 +42,16 @@ export function thorRoot(): string {
 
 function loadEnv(): Env | null {
   if (cached !== undefined) return cached;
+  // Bản chạy trên mạng (Vercel): khoá nằm trong biến môi trường, không có file .env.local của Thor.
+  const envUrl = process.env.THOR_SUPABASE_URL;
+  const envKey = process.env.THOR_SUPABASE_SERVICE_KEY;
+  if (envUrl && envKey) {
+    cached = { url: envUrl, key: envKey };
+    return cached;
+  }
   try {
     const map: Record<string, string> = {};
-    for (const line of fs.readFileSync(envPath(), "utf8").split(/\r?\n/)) {
+    for (const line of fs.readFileSync(/*turbopackIgnore: true*/ envPath(), "utf8").split(/\r?\n/)) {
       const t = line.trim();
       if (!t || t.startsWith("#") || !t.includes("=")) continue;
       const i = t.indexOf("=");

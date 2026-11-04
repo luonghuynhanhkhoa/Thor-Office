@@ -158,6 +158,7 @@ export const EXEC_LOGIC: Record<"exec_features" | "exec_ui", AgentLogic> = {
     sim: simExecFeatures as AgentLogic["sim"],
   },
   exec_ui: {
+    localOnly: true,
     system:
       BASE_RULES +
       " NHÁNH CỦA BẠN (Phòng Điều Hành · Giao diện): quản lý giao diện của Admin — menu, các trang, mục Có gì mới và Hướng dẫn có đồng bộ không.",

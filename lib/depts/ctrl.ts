@@ -173,6 +173,7 @@ function simCtrlOps(d: CtrlOps): string {
 
 export const CTRL_LOGIC: Record<"ctrl_code" | "ctrl_ops", AgentLogic> = {
   ctrl_code: {
+    localOnly: true,
     system:
       BASE_RULES +
       " NHÁNH CỦA BẠN (Trung Tâm Kiểm Soát · Rà soát): rà soát lỗi của App — kiểm tra kiểu, ESLint, tệp quá dài, bố cục màn hình (tràn ngang), tải dữ liệu/tối ưu.",
@@ -181,6 +182,7 @@ export const CTRL_LOGIC: Record<"ctrl_code" | "ctrl_ops", AgentLogic> = {
     sim: simCtrlCode as AgentLogic["sim"],
   },
   ctrl_ops: {
+    localOnly: true,
     system:
       BASE_RULES +
       " NHÁNH CỦA BẠN (Trung Tâm Kiểm Soát · Vận hành): kiểm tra vận hành — trạng thái các kho mã (commit/đẩy/kéo), file rác cần dọn, file nặng, file nhạy cảm, tài liệu bàn giao có cũ không.",

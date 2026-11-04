@@ -8,6 +8,15 @@ import { thorRoot } from "@/lib/thorData";
  * Tâm Kiểm Soát / Điều Hành. Không có hàm nào ghi, xoá hay sửa file.
  */
 
+/** Có thư mục mã nguồn Thor trên máy này không (bản chạy trên mạng thì không có → các việc đọc mã/git sẽ báo "chỉ chạy trên máy anh"). */
+export function localAvailable(): boolean {
+  try {
+    return fs.existsSync(path.join(thorRoot(), "package.json"));
+  } catch {
+    return false;
+  }
+}
+
 /** Giải đường dẫn tương đối trong Thor, chặn thoát ra ngoài thư mục Thor. */
 function inThor(rel: string): string {
   const root = thorRoot();
