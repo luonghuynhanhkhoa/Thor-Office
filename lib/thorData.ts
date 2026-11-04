@@ -158,3 +158,32 @@ export class Ctx {
     return this.memo.get(key) as Promise<T>;
   }
 }
+
+/** Chẩn đoán kết nối Thor (KHÔNG lộ khoá): thử đọc 1 dòng bảng staff bằng 2 cách gửi khoá, báo mã trả về. */
+export async function diagnose(): Promise<Record<string, unknown>> {
+  const env = loadEnv();
+  if (!env) return { connected: false, note: "Chưa có THOR_SUPABASE_URL / THOR_SUPABASE_SERVICE_KEY (hoặc file .env.local của Thor)." };
+  let host = "?";
+  try {
+    host = new URL(env.url).host;
+  } catch {
+    host = `URL không hợp lệ (độ dài ${env.url.length})`;
+  }
+  const kind = env.key.startsWith("sb_secret_") ? "sb_secret" : env.key.startsWith("sb_publishable_") ? "sb_publishable (SAI loại khoá!)" : env.key.startsWith("eyJ") ? "jwt-legacy" : "không nhận ra";
+  const hadSpace = env.key !== env.key.trim() || env.url !== env.url.trim();
+  const variants: Record<string, Record<string, string>> = {
+    "chi-apikey": { apikey: env.key },
+    "apikey+bearer": { apikey: env.key, Authorization: `Bearer ${env.key}` },
+  };
+  const results: Record<string, string> = {};
+  for (const [name, headers] of Object.entries(variants)) {
+    try {
+      const res = await fetch(`${env.url.trim()}/rest/v1/staff?select=id&limit=1`, { headers: Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, v.trim()])), cache: "no-store" });
+      const body = (await res.text()).slice(0, 160);
+      results[name] = `${res.status} ${body}`;
+    } catch (e) {
+      results[name] = `LỖI mạng: ${(e as Error).message}`;
+    }
+  }
+  return { connected: true, host, keyKind: kind, keyLength: env.key.length, coKhoangTrang: hadSpace, results };
+}
