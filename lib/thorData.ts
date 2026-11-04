@@ -46,7 +46,8 @@ function loadEnv(): Env | null {
   const envUrl = process.env.THOR_SUPABASE_URL;
   const envKey = process.env.THOR_SUPABASE_SERVICE_KEY;
   if (envUrl && envKey) {
-    cached = { url: envUrl, key: envKey };
+    // Khoá "publishable" (công khai) bị luật bảo mật của Supabase chặn → đọc ra rỗng. Coi như CHƯA nối để huy hiệu báo đúng.
+    cached = envKey.trim().startsWith("sb_publishable_") ? null : { url: envUrl.trim(), key: envKey.trim() };
     return cached;
   }
   try {
