@@ -73,6 +73,11 @@ export function thorConnected(): boolean {
   return loadEnv() !== null;
 }
 
+/** Khoá kiểu mới (sb_secret_…) chỉ gửi qua header apikey (không phải JWT); khoá JWT kiểu cũ gửi thêm Authorization. */
+function authHeaders(env: Env): Record<string, string> {
+  return env.key.startsWith("sb_") ? { apikey: env.key } : { apikey: env.key, Authorization: `Bearer ${env.key}` };
+}
+
 function needEnv(): Env {
   const env = loadEnv();
   if (!env) {
@@ -93,7 +98,7 @@ export async function fetchAll<T>(table: string, query: string): Promise<T[]> {
     const res = await fetch(
       `${env.url}/rest/v1/${table}?${query}&limit=${page}&offset=${off}`,
       {
-        headers: { apikey: env.key, Authorization: `Bearer ${env.key}` },
+        headers: authHeaders(env),
         cache: "no-store",
       }
     );
@@ -110,7 +115,7 @@ export async function countRows(table: string, filter = ""): Promise<number> {
   if (!ALLOWED.has(table)) throw new Error(`Bảng "${table}" không nằm trong danh sách được đọc.`);
   const env = needEnv();
   const res = await fetch(`${env.url}/rest/v1/${table}?select=id${filter ? `&${filter}` : ""}&limit=1`, {
-    headers: { apikey: env.key, Authorization: `Bearer ${env.key}`, Prefer: "count=exact" },
+    headers: { ...authHeaders(env), Prefer: "count=exact" },
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`Đếm bảng ${table} lỗi (${res.status}).`);
@@ -133,7 +138,7 @@ export async function fetchAuthUsers(): Promise<AuthUser[]> {
   const out: AuthUser[] = [];
   for (let page = 1; page <= 20; page++) {
     const res = await fetch(`${env.url}/auth/v1/admin/users?page=${page}&per_page=1000`, {
-      headers: { apikey: env.key, Authorization: `Bearer ${env.key}` },
+      headers: authHeaders(env),
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`Đọc danh sách đăng nhập lỗi (${res.status}).`);
