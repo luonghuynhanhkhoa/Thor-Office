@@ -34,7 +34,7 @@ import {
   type StaffRole,
 } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
-import type { DutyStaff } from "@/lib/dutyTypes";
+import { staffLook, type DutyStaff } from "@/lib/dutyTypes";
 import { Buildings, Hall, LogoSigns, WorkRooms, Zone, type DoorState } from "@/components/Campus";
 import { B } from "@/components/sceneKit";
 
@@ -59,7 +59,7 @@ const lerpAngle = (a: number, b: number, t: number) => {
 type Ctl = { mode: "desk" | "walk" | "spot"; pose: Pose | null; sit: boolean; status: AgentStatus };
 
 /** Người: thân + đầu + 2 tay + 2 chân. Hoạt ảnh theo chế độ (ngồi bàn / đi / làm việc ở khu nghỉ). */
-function Person({ color, ctl, hair = "#2b2118" }: { color: string; ctl: React.RefObject<Ctl>; hair?: string }) {
+function Person({ color, ctl, hair = "#2b2118", skin = SKIN }: { color: string; ctl: React.RefObject<Ctl>; hair?: string; skin?: string }) {
   const body = useRef<THREE.Group>(null);
   const head = useRef<THREE.Group>(null);
   const armL = useRef<THREE.Mesh>(null);
@@ -175,7 +175,7 @@ function Person({ color, ctl, hair = "#2b2118" }: { color: string; ctl: React.Re
         <group ref={head} position={[0, 0.86, 0]}>
           <mesh castShadow>
             <sphereGeometry args={[0.19, 20, 20]} />
-            <meshStandardMaterial color={SKIN} roughness={0.8} />
+            <meshStandardMaterial color={skin} roughness={0.8} />
           </mesh>
           <mesh position={[0, 0.07, -0.02]}>
             <sphereGeometry args={[0.2, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
@@ -326,7 +326,6 @@ function Agent({ meta, st, onSelect, roam, locked }: { meta: AgentMeta; st: Agen
 }
 
 // ---------------------------------------------------------------- nhân viên thật (Reader/Saler)
-const HAIRS = ["#2b2118", "#4a3222", "#1a1a1a", "#6b3f1d", "#3b2a4a", "#7a4a2a"];
 const hashStr = (s: string) => {
   let h = 0;
   for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -371,8 +370,7 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "walk", pose: null, sit: false, status: "idle" });
   const sim = useRef<StaffSim>({ init: false, node: { kind: "out", x: 0, z: 0 }, target: null, route: null, s: 0, phase: "idle", dwellUntil: 0, heading: 0, held: null });
-  const color = staff.role === "reader" ? "#34d399" : "#fb923c";
-  const hair = HAIRS[hashStr(staff.id) % HAIRS.length];
+  const look = staffLook(staff.idx);
 
   useEffect(() => {
     const S = sim.current;
@@ -484,7 +482,7 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
 
   return (
     <group ref={g}>
-      <Person color={color} ctl={ctl} hair={hair} />
+      <Person color={look.shirt} ctl={ctl} hair={look.hair} skin={look.skin} />
     </group>
   );
 }
@@ -730,7 +728,7 @@ export default function Office3D({
             className="absolute left-0 top-0 flex items-center gap-1 whitespace-nowrap rounded-full border bg-white/90 px-2 py-0.5 text-[10.5px] font-bold text-slate-800 shadow"
             style={{ borderColor: s.role === "reader" ? "#34d399" : "#fb923c", opacity: 0 }}
           >
-            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: s.role === "reader" ? "#34d399" : "#fb923c" }} />
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: staffLook(s.idx).shirt }} />
             {s.name}
           </div>
         ))}

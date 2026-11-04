@@ -299,7 +299,7 @@ export default function Home() {
             <ul className="space-y-1 text-[11px] text-slate-600">
               <li className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: "#34d399" }} /> Reader ({duty.filter((s) => s.role === "reader" && s.state === "on").length} đang trực) — ngồi phòng làm việc Reader (góc đông bắc)</li>
               <li className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: "#fb923c" }} /> Saler ({duty.filter((s) => s.role === "saler" && s.state === "on").length} đang trực) — ngồi phòng làm việc Saler (phía tây)</li>
-              <li className="text-slate-500">Chưa tới giờ trực / nghỉ giữa ca: đi dạo quanh công ty hoặc nghỉ ở quán, gym, phòng nghỉ. Tên hiện trên đầu nhân vật.</li>
+              <li className="text-slate-500">Chưa tới giờ trực / nghỉ giữa ca: đi dạo quanh công ty hoặc nghỉ ở quán, gym, phòng nghỉ. Mỗi nhân viên một màu áo riêng (chấm màu cạnh tên); viền tên: xanh lá = Reader, cam = Saler.</li>
             </ul>
             <div className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">Đèn trước cửa phòng</div>
             <ul className="space-y-1 text-[11px] text-slate-600">

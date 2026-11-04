@@ -24,6 +24,7 @@ export async function getDuty(): Promise<DutyStaff[]> {
     fetchAll<{ id: string; name: string; role: string; archived?: boolean | null }>("staff", "select=id,name,role,archived&order=id.asc"),
   ]);
   const people = new Map(staff.filter((s) => (s.role === "reader" || s.role === "saler") && !s.archived).map((s) => [s.id, s]));
+  const order = [...people.keys()].sort();
   const now = nowMinutesVN();
   const out: DutyStaff[] = [];
   const seen = new Set<string>();
@@ -35,7 +36,7 @@ export async function getDuty(): Promise<DutyStaff[]> {
     if (s === null || e === null) continue; // nghỉ cả ngày
     seen.add(p.id);
     const role = p.role as "reader" | "saler";
-    const base = { id: p.id, name: p.name, role, from: h.start_time?.slice(0, 5), to: h.end_time?.slice(0, 5) };
+    const base = { id: p.id, name: p.name, role, idx: order.indexOf(p.id), from: h.start_time?.slice(0, 5), to: h.end_time?.slice(0, 5) };
     if (now < s) out.push({ ...base, state: "soon" });
     else if (now >= e) continue; // đã hết ca
     else {
@@ -59,7 +60,8 @@ export async function getDutyDemo(): Promise<DutyStaff[]> {
   const live = staff.filter((s) => !s.archived);
   const readers = live.filter((s) => s.role === "reader").slice(0, 10);
   const salers = live.filter((s) => s.role === "saler").slice(0, 5);
+  const order = live.filter((s) => s.role === "reader" || s.role === "saler").map((s) => s.id).sort();
   const pick = (list: typeof live, role: "reader" | "saler"): DutyStaff[] =>
-    list.map((p, i) => ({ id: p.id, name: p.name, role, state: i % 3 === 2 ? "soon" : i % 7 === 6 ? "break" : "on", from: "08:00", to: "17:00" }));
+    list.map((p, i) => ({ id: p.id, name: p.name, role, idx: order.indexOf(p.id), state: i % 3 === 2 ? "soon" : i % 7 === 6 ? "break" : "on", from: "08:00", to: "17:00" }));
   return [...pick(readers, "reader"), ...pick(salers, "saler")];
 }
