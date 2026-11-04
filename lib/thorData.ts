@@ -208,3 +208,15 @@ export async function passwordLogin(email: string, password: string): Promise<{ 
   const j = (await res.json()) as { user?: { id?: string; email?: string } };
   return j.user?.id ? { id: j.user.id, email: j.user.email ?? email } : null;
 }
+/** Vì sao chưa nối được Thor (chỉ nêu TÊN biến thiếu/sai, không lộ giá trị) — để trang đăng nhập báo đúng chỗ cần sửa. */
+export function envProblem(): string | null {
+  if (loadEnv()) return null;
+  const url = process.env.THOR_SUPABASE_URL;
+  const key = process.env.THOR_SUPABASE_SERVICE_KEY;
+  if (url || key) {
+    if (!url) return "Thiếu biến THOR_SUPABASE_URL trên Vercel.";
+    if (!key) return "Thiếu biến THOR_SUPABASE_SERVICE_KEY trên Vercel.";
+    if (key.trim().startsWith("sb_publishable_")) return "Biến THOR_SUPABASE_SERVICE_KEY đang là khoá PUBLISHABLE — phải là khoá SECRET (sb_secret_…). Khoá publishable chỉ dán vào THOR_SUPABASE_PUBLISHABLE_KEY.";
+  }
+  return "Chưa có THOR_SUPABASE_URL / THOR_SUPABASE_SERVICE_KEY.";
+}

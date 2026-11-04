@@ -1,11 +1,11 @@
 import { NextResponse, connection } from "next/server";
-import { fetchAll, passwordLogin, thorConnected } from "@/lib/thorData";
+import { envProblem, fetchAll, passwordLogin, thorConnected } from "@/lib/thorData";
 import { SESSION_COOKIE, SESSION_TTL_S, authMode, signSession } from "@/lib/session";
 
 /** GET: cho trang đăng nhập biết chế độ. POST: đăng nhập bằng email + mật khẩu CỦA TÀI KHOẢN THOR, rồi cấp phiên đã ký. */
 export async function GET() {
   await connection();
-  return Response.json({ mode: authMode() });
+  return Response.json({ mode: authMode(), problem: envProblem() });
 }
 
 export async function POST(request: Request) {
@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   const mode = authMode();
   if (mode === "open") return Response.json({ ok: true });
   if (mode === "locked" || !thorConnected()) {
-    return Response.json({ error: "Bản trên mạng chưa được cấu hình đủ (thiếu khoá Thor)." }, { status: 503 });
+    return Response.json({ error: envProblem() ?? "Bản trên mạng chưa được cấu hình đủ (thiếu khoá Thor)." }, { status: 503 });
   }
 
   const body = (await request.json().catch(() => null)) as { email?: string; password?: string } | null;
