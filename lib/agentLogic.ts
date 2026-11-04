@@ -42,7 +42,8 @@ export const WORKERS: AgentId[] = AGENTS.filter((a) => LOGIC[a.id].gather).map((
  * Chỉ huy (chế độ tự tính): chọn AI theo yêu cầu.
  *  1. Có nhắc TÊN PHÒNG (vd "kế toán", "nhân sự") → giao cho CẢ 2 AI của phòng đó.
  *  2. Có từ khoá riêng của từng AI → chọn AI khớp.
- *  3. Yêu cầu chung ("tổng quan", "báo cáo"…) hoặc không khớp gì → giao mọi AI.
+ *  3. Chỉ khi nói rõ "tổng quan / tất cả / toàn công ty" mới giao mọi AI; không khớp gì → không giao (hỏi lại).
+ *  (Yêu cầu nhắc TÊN một Reader/Saler/QC được xử lý riêng ở lib/lookup.ts — chỉ trả đúng người đó.)
  */
 export function planByKeywords(request: string): AgentId[] {
   const q = norm(request);
@@ -69,7 +70,9 @@ export function planByKeywords(request: string): AgentId[] {
     if (LOGIC[id].keywords.some((k) => q.includes(k))) picked.add(id);
   }
 
-  const wantsAll = /tong quan|bao cao|tat ca|toan bo|tinh hinh|toan cong ty/.test(q);
-  if (wantsAll || picked.size === 0) return [...WORKERS];
-  return WORKERS.filter((id) => picked.has(id));
+  // Chỉ báo cáo TỔNG THỂ khi anh nói rõ ("tổng quan", "tất cả", "toàn công ty"…). Có chỉ đích danh phòng/việc thì chỉ làm đúng phần đó.
+  if (/tong quan|tat ca|toan bo|tinh hinh|toan cong ty|bao cao chung|bao cao tong/.test(q)) return [...WORKERS];
+  if (picked.size > 0) return WORKERS.filter((id) => picked.has(id));
+  if (/bao cao/.test(q)) return [...WORKERS];
+  return []; // không rõ yêu cầu → hỏi lại, KHÔNG tự đưa báo cáo tổng thể
 }

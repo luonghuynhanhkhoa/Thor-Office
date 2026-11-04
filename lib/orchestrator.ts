@@ -3,6 +3,11 @@ import { LOGIC, WORKERS, planByKeywords } from "@/lib/agentLogic";
 import { askModel, runnerMode } from "@/lib/runner";
 import { Ctx } from "@/lib/thorData";
 import { localAvailable } from "@/lib/thorFiles";
+import { detectTopics, resolvePeople } from "@/lib/lookup";
+import { lookupText } from "@/lib/lookup";
+
+/** AI phụ trách truy xuất từng vai trò (AI "Quản lý" của phòng tương ứng). */
+const LEAD: Record<"reader" | "saler" | "qc", AgentId> = { reader: "reader_manage", saler: "sale_manage", qc: "qc_manage" };
 
 /**
  * Bộ điều phối: Chỉ huy chia việc → các AI chuyên môn làm SONG SONG (mỗi AI một nhánh)
@@ -144,7 +149,60 @@ async function run(job: Job): Promise<void> {
   set(job, "commander", { status: "thinking", task: "Đang phân việc…", startedAt: Date.now() });
   log(job, "commander", `Nhận yêu cầu: "${job.request}"`);
   if (job.runner === "sim") await sleep(jitter(1200, 2000));
+
+  // 0) Yêu cầu nhắc TÊN một người (Reader/Saler/QC) → chỉ truy xuất ĐÚNG người đó, đúng chủ đề được hỏi — không báo cáo tổng thể.
+  const people = await resolvePeople(ctx, job.request);
+  if (people.length) {
+    const topics = detectTopics(job.request);
+    job.plan = people.map((p) => ({ agent: LEAD[p.role], task: `Truy xuất ${p.name}${topics.length ? ` — ${topics.join(", ")}` : ""}` }));
+    set(job, "commander", { status: "done", task: `Đã giao truy xuất ${people.map((p) => p.name).join(", ")}`, finishedAt: Date.now() });
+    log(job, "commander", `Chỉ truy xuất: ${people.map((p) => p.name).join(", ")}${topics.length ? ` (${topics.join(", ")})` : ""}`);
+    job.phase = "working";
+    const texts = await Promise.all(
+      people.map(async (p, i) => {
+        const agent = job.plan[i].agent;
+        set(job, agent, { status: "working", task: job.plan[i].task, startedAt: Date.now(), result: undefined, error: undefined });
+        log(job, agent, `Nhận việc: ${job.plan[i].task}`);
+        try {
+          await sleep(jitter(900, 1800));
+          const text = await lookupText(ctx, p, topics);
+          set(job, agent, { status: "done", result: text, finishedAt: Date.now() });
+          log(job, agent, "Xong việc.");
+          return text;
+        } catch (e) {
+          set(job, agent, { status: "error", error: (e as Error).message, finishedAt: Date.now() });
+          return `## ${p.name}\n⚠️ Không lấy được: ${(e as Error).message}`;
+        }
+      })
+    );
+    job.phase = "composing";
+    set(job, "reporter", { status: "working", task: "Đang gửi kết quả…", startedAt: Date.now() });
+    await sleep(jitter(500, 900));
+    // trùng tên khác vai trò (vd Saler Hiếu và QC Hiếu): chỉ giữ người có thông tin đúng chủ đề được hỏi
+    const useful = texts.filter((t) => t.trim());
+    job.final = useful.length
+      ? useful.join("\n\n---\n\n")
+      : `## ${people.map((p) => p.name).join(", ")}\n- Chưa có thông tin cho mục được hỏi${topics.length ? ` (${topics.join(", ")})` : ""}.`;
+    set(job, "reporter", { status: "done", task: "Đã gửi kết quả", finishedAt: Date.now() });
+    job.phase = "done";
+    log(job, "reporter", "Hoàn tất.");
+    return;
+  }
+
   job.plan = await plan(job);
+  if (job.plan.length === 0) {
+    set(job, "commander", { status: "done", task: "Chưa rõ yêu cầu", finishedAt: Date.now() });
+    log(job, "commander", "Yêu cầu chưa chỉ rõ phòng/việc/người — hỏi lại, không đưa báo cáo tổng thể.");
+    job.final =
+      "## Em chưa rõ anh muốn xem gì\n" +
+      "Anh nói rõ hơn giúp em, ví dụ:\n" +
+      "- Một người: **“Moon”**, **“Reader Moon lương tháng này”**, **“Hiếu bán được gì hôm nay”**, **“Phi ca hôm nay”**\n" +
+      "- Một phòng: **“Báo cáo của Phòng Kế Toán”**, **“Phòng QC khiếu nại”**\n" +
+      "- Một việc: **“Ai đang trực hôm nay?”**, **“Kiểm tra đơn bị thiếu”**\n" +
+      "- Toàn công ty: **“Tổng quan toàn công ty”**";
+    job.phase = "done";
+    return;
+  }
   set(job, "commander", {
     status: "done",
     task: `Đã giao ${job.plan.length} việc cho ${job.plan.length} AI`,

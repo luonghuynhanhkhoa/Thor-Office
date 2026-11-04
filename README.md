@@ -31,6 +31,13 @@ Thử nhanh: `?hour=8` (ép giờ trong ngày) và/hoặc `?fast=1` (AI đi lạ
 - AI rảnh tự **tìm đường (A\*)** quanh các công trình tới khu nghỉ/họp theo giờ VN (sáng cà phê/ăn sáng, 9–10h30 họp đầu ngày, trưa ăn rồi nghỉ, 14–15h30 họp nhanh, chiều tập gym) và về bàn ngay khi có việc.
 - Bên trái có **ghi chú màu** theo phòng ban/nhiệm vụ + ý nghĩa đèn cửa; trong cảnh không có nhãn tên phòng hay nhãn từng AI cho đỡ rối. Bấm từng AI = xem việc của AI đó.
 
+## Hỏi gì trả đúng đó (không đưa báo cáo tổng thể nếu không xin)
+
+- **Nhắc tên một Reader/Saler/QC** (vd `Moon`, `Reader Moon lương tháng này`, `Hiếu bán được gì hôm nay`, `Thuý Đàm ca hôm nay`) → chỉ trả thông tin ĐÚNG NGƯỜI đó, đúng chủ đề hỏi (giờ trực · ca/hẹn giờ · đơn/bán hàng · lương · điểm QC & khiếu nại; không nêu chủ đề thì đủ các mục của người đó). Tên ngắn (Su, TP, Ân, Chi, Mai…) phải viết hoa hoặc có chữ Reader/Saler/QC đứng trước; viết đúng dấu (Thỏ ≠ Thơ) được ưu tiên; trùng tên khác vai trò thì chỉ giữ người có thông tin đúng chủ đề. Mã: `lib/lookup.ts`.
+- **Nhắc tên một phòng** (`Báo cáo của Phòng Kế Toán`) → chỉ AI của phòng đó.
+- **Chỉ khi nói rõ** `tổng quan / tất cả / toàn công ty` mới chạy mọi AI. Yêu cầu không rõ → hệ thống hỏi lại kèm ví dụ, KHÔNG tự đưa báo cáo tổng thể.
+- Icon app (tab trình duyệt, thêm vào màn hình chính) = logo Thỏ: `node scripts/make-icons.cjs`.
+
 ## 3 chế độ chạy AI (hiện ở góc trên-trái)
 
 `api` (có `ANTHROPIC_API_KEY`) · `cli` (`claude -p`, cần cài Claude Code + đăng nhập) · `sim` (mặc định: AI tự tính từ dữ liệu thật của Thor, chưa nối AI).

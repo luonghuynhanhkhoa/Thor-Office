@@ -607,7 +607,7 @@ export default function Home() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Hỏi tiến độ hoặc giao việc cho đội ngũ…"
+            placeholder="Gõ tên một người (vd: Moon lương hôm nay) hoặc một phòng/việc…"
             maxLength={500}
             className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
           />
