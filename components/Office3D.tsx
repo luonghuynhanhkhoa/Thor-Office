@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -13,9 +13,29 @@ import {
   type AgentStatus,
   type DeptId,
 } from "@/lib/agentsMeta";
-import { LOUNGES, LOUNGE_BY_ID, LOUNGE_IDS, buildRoute, pickLounge, pointAt, vnHour, type LoungeId, type Pose, type Route, type Spot } from "@/lib/layout";
+import {
+  LOUNGES,
+  LOUNGE_BY_ID,
+  LOUNGE_IDS,
+  WANDER_POINTS,
+  WORKROOMS,
+  WORKROOM_BY_ID,
+  buildRoute,
+  nodePos,
+  pickLounge,
+  pointAt,
+  routeBetween,
+  vnHour,
+  type LoungeId,
+  type PlaceNode,
+  type Pose,
+  type Route,
+  type Spot,
+  type StaffRole,
+} from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
-import { Buildings, Hall, LogoSigns, Zone, type DoorState } from "@/components/Campus";
+import type { DutyStaff } from "@/lib/dutyTypes";
+import { Buildings, Hall, LogoSigns, WorkRooms, Zone, type DoorState } from "@/components/Campus";
 import { B } from "@/components/sceneKit";
 
 /**
@@ -39,7 +59,7 @@ const lerpAngle = (a: number, b: number, t: number) => {
 type Ctl = { mode: "desk" | "walk" | "spot"; pose: Pose | null; sit: boolean; status: AgentStatus };
 
 /** Người: thân + đầu + 2 tay + 2 chân. Hoạt ảnh theo chế độ (ngồi bàn / đi / làm việc ở khu nghỉ). */
-function Person({ color, ctl }: { color: string; ctl: React.RefObject<Ctl> }) {
+function Person({ color, ctl, hair = "#2b2118" }: { color: string; ctl: React.RefObject<Ctl>; hair?: string }) {
   const body = useRef<THREE.Group>(null);
   const head = useRef<THREE.Group>(null);
   const armL = useRef<THREE.Mesh>(null);
@@ -74,7 +94,13 @@ function Person({ color, ctl }: { color: string; ctl: React.RefObject<Ctl> }) {
       aR = sw * 0.55;
       bob = Math.abs(sw) * 0.03;
     } else if (c.mode === "desk") {
-      if (c.status === "working") {
+      if (c.pose === "type") {
+        // nhân viên thật đang trực: gõ máy nhẹ nhàng, thỉnh thoảng nhìn quanh
+        aL = -0.85 + Math.sin(t * 7) * 0.12;
+        aR = -0.85 + Math.sin(t * 7 + 1.9) * 0.12;
+        headY = Math.sin(t * 0.35) > 0.8 ? Math.sin(t * 1.5) * 0.5 : 0;
+        bob = Math.sin(t * 1.6) * 0.012;
+      } else if (c.status === "working") {
         aL = -0.9 + Math.sin(t * 14) * 0.25;
         aR = -0.9 + Math.sin(t * 14 + 1.7) * 0.25;
         bob = Math.sin(t * 6) * 0.015;
@@ -153,7 +179,7 @@ function Person({ color, ctl }: { color: string; ctl: React.RefObject<Ctl> }) {
           </mesh>
           <mesh position={[0, 0.07, -0.02]}>
             <sphereGeometry args={[0.2, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-            <meshStandardMaterial color="#2b2118" roughness={0.9} />
+            <meshStandardMaterial color={hair} roughness={0.9} />
           </mesh>
         </group>
         <mesh ref={armL} position={[-0.27, 0.5, 0]} castShadow>
@@ -299,6 +325,183 @@ function Agent({ meta, st, onSelect, roam, locked }: { meta: AgentMeta; st: Agen
   );
 }
 
+// ---------------------------------------------------------------- nhân viên thật (Reader/Saler)
+const HAIRS = ["#2b2118", "#4a3222", "#1a1a1a", "#6b3f1d", "#3b2a4a", "#7a4a2a"];
+const hashStr = (s: string) => {
+  let h = 0;
+  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h;
+};
+
+/** Chia bàn cho người đang trực (cố định theo mã nhân viên; trùng thì lấy bàn kế tiếp). */
+function assignDesks(duty: DutyStaff[]): Map<string, number> {
+  const res = new Map<string, number>();
+  for (const role of ["reader", "saler"] as StaffRole[]) {
+    const cap = WORKROOM_BY_ID[role].desks.length;
+    const taken = new Set<number>();
+    const on = duty.filter((d) => d.role === role && d.state === "on").sort((a, b) => a.id.localeCompare(b.id));
+    for (const p of on) {
+      if (taken.size >= cap) break;
+      let i = hashStr(p.id) % cap;
+      while (taken.has(i)) i = (i + 1) % cap;
+      taken.add(i);
+      res.set(p.id, i);
+    }
+  }
+  return res;
+}
+
+type StaffSim = {
+  init: boolean;
+  node: PlaceNode;
+  target: PlaceNode | null;
+  route: Route | null;
+  s: number;
+  phase: "idle" | "moving";
+  dwellUntil: number;
+  heading: number;
+  held: { id: LoungeId; idx: number } | null;
+};
+
+/**
+ * Một nhân viên thật. Đang trong giờ trực → ngồi gõ máy ở bàn trong phòng làm việc của vai trò mình;
+ * chưa tới giờ trực (hoặc đang nghỉ giữa ca) → đi dạo quanh công ty hoặc ngồi nghỉ ở quán/gym/phòng nghỉ/phòng họp.
+ */
+function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx: number | null; roam: Roam; onPos: (id: string, x: number, z: number) => void }) {
+  const g = useRef<THREE.Group>(null);
+  const ctl = useRef<Ctl>({ mode: "walk", pose: null, sit: false, status: "idle" });
+  const sim = useRef<StaffSim>({ init: false, node: { kind: "out", x: 0, z: 0 }, target: null, route: null, s: 0, phase: "idle", dwellUntil: 0, heading: 0, held: null });
+  const color = staff.role === "reader" ? "#34d399" : "#fb923c";
+  const hair = HAIRS[hashStr(staff.id) % HAIRS.length];
+
+  useEffect(() => {
+    const S = sim.current;
+    return () => {
+      if (S.held) roam.release(S.held.id, S.held.idx);
+    };
+  }, [roam]);
+
+  useFrame(({ clock }, dtRaw) => {
+    const grp = g.current;
+    if (!grp) return;
+    const S = sim.current;
+    const C = ctl.current;
+    const now = clock.elapsedTime;
+    const dt = Math.min(dtRaw, 0.1);
+    const k = roam.fast ? 3 : 1;
+    const deskNode: PlaceNode | null = deskIdx !== null ? { kind: "desk", room: staff.role, idx: deskIdx } : null;
+    const wantDesk = staff.state === "on" && deskNode !== null;
+
+    if (!S.init) {
+      S.init = true;
+      if (wantDesk && deskNode) S.node = deskNode;
+      else {
+        const [x, z] = WANDER_POINTS[Math.floor(Math.random() * WANDER_POINTS.length)];
+        S.node = { kind: "out", x, z };
+        S.dwellUntil = now + rand(1, 6) / k;
+      }
+    }
+
+    const releaseHeld = () => {
+      if (S.held) roam.release(S.held.id, S.held.idx);
+      S.held = null;
+    };
+    const startMove = (to: PlaceNode) => {
+      S.route = routeBetween(S.node, to);
+      S.target = to;
+      S.s = 0;
+      S.phase = "moving";
+    };
+
+    if (S.phase === "idle") {
+      const atDesk = S.node.kind === "desk" && deskIdx !== null && S.node.idx === deskIdx;
+      if (wantDesk && deskNode && !atDesk) {
+        releaseHeld();
+        startMove(deskNode);
+      } else if (!wantDesk && (S.node.kind === "desk" || now >= S.dwellUntil)) {
+        releaseHeld();
+        let to: PlaceNode | null = null;
+        if (Math.random() < 0.55) {
+          const id = pickLounge(roam.hour(), Math.random);
+          const i = roam.claim(id);
+          if (i >= 0) {
+            S.held = { id, idx: i };
+            to = { kind: "lounge", id, spot: LOUNGE_BY_ID[id].spots[i] };
+          }
+        }
+        if (!to) {
+          const [x, z] = WANDER_POINTS[Math.floor(Math.random() * WANDER_POINTS.length)];
+          to = { kind: "out", x, z };
+        }
+        startMove(to);
+      }
+    } else if (S.route && S.target) {
+      S.s += 1.5 * k * dt;
+      if (S.s >= S.route.total) {
+        S.node = S.target;
+        S.phase = "idle";
+        S.route = null;
+        S.dwellUntil = S.node.kind === "lounge" ? now + rand(25, 50) / k : S.node.kind === "out" ? now + rand(3, 8) / k : Infinity;
+      }
+    }
+
+    let x: number;
+    let z: number;
+    let target = S.heading;
+    if (S.phase === "moving" && S.route) {
+      const p = pointAt(S.route, S.s);
+      x = p.x;
+      z = p.z;
+      if (Math.abs(p.dx) + Math.abs(p.dz) > 1e-6) target = Math.atan2(p.dx, p.dz);
+    } else {
+      [x, z] = nodePos(S.node);
+      if (S.node.kind === "lounge") target = S.node.spot.face;
+      else if (S.node.kind === "desk") target = Math.PI;
+    }
+    S.heading = lerpAngle(S.heading, target, Math.min(1, dt * 8));
+    grp.position.set(x, 0, z);
+    grp.rotation.y = S.heading;
+    onPos(staff.id, x, z);
+
+    if (S.phase === "moving") {
+      C.mode = "walk";
+      C.sit = false;
+      C.pose = null;
+    } else if (S.node.kind === "desk") {
+      C.mode = "desk";
+      C.sit = true;
+      C.pose = "type";
+    } else if (S.node.kind === "lounge") {
+      C.mode = "spot";
+      C.sit = S.node.spot.sit;
+      C.pose = S.node.spot.pose;
+    } else {
+      C.mode = "spot";
+      C.sit = false;
+      C.pose = null;
+    }
+  });
+
+  return (
+    <group ref={g}>
+      <Person color={color} ctl={ctl} hair={hair} />
+    </group>
+  );
+}
+
+/** Mỗi khung hình: chiếu vị trí đầu từng nhân viên ra toạ độ màn hình (nhãn tên là HTML thường, tránh drei <Html>). */
+function StaffProjector({ get, onProject }: { get: () => Record<string, { x: number; z: number }>; onProject: (id: string, x: number, y: number, on: boolean) => void }) {
+  const v = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera, size }) => {
+    const pos = get();
+    for (const id of Object.keys(pos)) {
+      v.set(pos[id].x, 2.05, pos[id].z).project(camera);
+      onProject(id, (v.x * 0.5 + 0.5) * size.width, (-v.y * 0.5 + 0.5) * size.height, v.z > -1 && v.z < 1);
+    }
+  });
+  return null;
+}
+
 // ---------------------------------------------------------------- bàn làm việc (không kèm người)
 function Station({ meta, st, selected, boss = false }: { meta: AgentMeta; st: AgentState; selected: boolean; boss?: boolean }) {
   const [x, z] = meta.pos;
@@ -377,12 +580,15 @@ export default function Office3D({
   tv,
   onTvClick,
   maint,
+  duty,
 }: {
   states: States;
   selected: AgentId | null;
   onSelect: (id: AgentId | null) => void;
   tv: TvData | null;
   onTvClick: (id: DeptId) => void;
+  /** Nhân viên Reader/Saler trực hôm nay: đang trực → ngồi bàn (có tên); chưa tới giờ → đi quanh công ty/nghỉ. */
+  duty: DutyStaff[];
   /** Phòng nào đang được cấu hình/chỉnh sửa (đèn cửa đỏ nhấp nháy + bảng Work in Process, AI trong phòng ở lại bàn). */
   maint: Partial<Record<DeptId, boolean>>;
 }) {
@@ -414,6 +620,43 @@ export default function Office3D({
     }),
     [opts]
   );
+
+  // --- nhân viên thật: bàn được chia, vị trí để vẽ nhãn tên
+  const assign = useMemo(() => assignDesks(duty), [duty]);
+  const occupied = useMemo(() => {
+    const o: Record<StaffRole, boolean[]> = { reader: WORKROOMS[0].desks.map(() => false), saler: WORKROOMS[1].desks.map(() => false) };
+    for (const p of duty) {
+      const i = assign.get(p.id);
+      if (i !== undefined) o[p.role][i] = true;
+    }
+    return o;
+  }, [assign, duty]);
+  const staffPos = useRef<Record<string, { x: number; z: number }>>({});
+  const screen = useRef<Record<string, { x: number; y: number; on: boolean }>>({});
+  const labelRefs = useRef<Record<string, HTMLElement | null>>({});
+  const onPos = useCallback((id: string, x: number, z: number) => {
+    staffPos.current[id] = { x, z };
+  }, []);
+  const getPos = useCallback(() => staffPos.current, []);
+  const onProject = useCallback((id: string, x: number, y: number, on: boolean) => {
+    screen.current[id] = { x, y, on };
+  }, []);
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      for (const id of Object.keys(labelRefs.current)) {
+        const el = labelRefs.current[id];
+        const p = screen.current[id];
+        if (el && p) {
+          el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+          el.style.opacity = p.on ? "1" : "0";
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const deptAgents = (id: DeptId) => AGENTS.filter((a) => a.dept === id);
   const deptActive = (id: DeptId) => deptAgents(id).some((a) => states[a.id].status === "working" || states[a.id].status === "thinking");
@@ -455,6 +698,7 @@ export default function Office3D({
           <LogoSigns />
         </Suspense>
         <Buildings />
+        <WorkRooms occupied={occupied} />
         {DEPTS.map((d) => (
           <Zone key={d.id} d={d} active={deptActive(d.id)} door={doorState(d.id)} data={tv ? tv[d.id] : null} states={states} onTv={onTvClick} />
         ))}
@@ -467,8 +711,30 @@ export default function Office3D({
         {AGENTS.filter((a) => a.id !== "commander" && states[a.id].startedAt && states[a.id].status !== "idle").map((a) => (
           <Parcel key={`${a.id}-${states[a.id].startedAt}`} meta={a} startedAt={states[a.id].startedAt!} />
         ))}
+        {duty.map((s) => (
+          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} />
+        ))}
+        <StaffProjector get={getPos} onProject={onProject} />
         <OrbitControls makeDefault enableDamping minZoom={8} maxZoom={90} maxPolarAngle={Math.PI / 2.2} target={[2, 0.8, 4]} />
       </Canvas>
+
+      {/* Tên nhân viên trên đầu nhân vật (Reader xanh lá · Saler cam) */}
+      <div className="pointer-events-none absolute inset-0">
+        {duty.map((s) => (
+          <div
+            key={s.id}
+            ref={(el) => {
+              labelRefs.current[s.id] = el;
+            }}
+            title={`${s.role === "reader" ? "Reader" : "Saler"} · ${s.from ?? ""}–${s.to ?? ""} · ${s.state === "on" ? "đang trực" : s.state === "break" ? "nghỉ giữa ca" : "chưa tới giờ trực"}`}
+            className="absolute left-0 top-0 flex items-center gap-1 whitespace-nowrap rounded-full border bg-white/90 px-2 py-0.5 text-[10.5px] font-bold text-slate-800 shadow"
+            style={{ borderColor: s.role === "reader" ? "#34d399" : "#fb923c", opacity: 0 }}
+          >
+            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: s.role === "reader" ? "#34d399" : "#fb923c" }} />
+            {s.name}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

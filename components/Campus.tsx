@@ -5,7 +5,7 @@ import { useFrame } from "@react-three/fiber";
 import { Grid, RoundedBox, useTexture } from "@react-three/drei";
 import * as THREE from "three";
 import { AGENTS, type AgentState, type AgentStatus, type DeptId, type DeptMeta, type AgentId } from "@/lib/agentsMeta";
-import { WORLD } from "@/lib/layout";
+import { WORKROOMS, WORLD, type StaffRole } from "@/lib/layout";
 import type { TvLine } from "@/lib/tv";
 import { B, Ball, Chair, Cyl, Plant, STATUS_DOT, STATUS_TEXT, TWO_PI, Tree } from "@/components/sceneKit";
 
@@ -135,7 +135,6 @@ function Door({ cx, cz, depth, state }: { cx: number; cz: number; depth: number;
   const color = DOOR_COLOR[state];
   const led = useRef<THREE.MeshStandardMaterial>(null);
   const bar = useRef<THREE.MeshStandardMaterial>(null);
-  const floor = useRef<THREE.MeshStandardMaterial>(null);
   const lamp = useRef<THREE.MeshStandardMaterial>(null);
   const [wip] = useState(() =>
     makeCanvasTexture(512, 320, (x) => {
@@ -166,7 +165,6 @@ function Door({ cx, cz, depth, state }: { cx: number; cz: number; depth: number;
     const on = state === "maint" ? (Math.sin(clock.elapsedTime * 7) > 0 ? 1 : 0.08) : 1;
     if (led.current) led.current.emissiveIntensity = 3 * on;
     if (bar.current) bar.current.emissiveIntensity = 2.4 * on;
-    if (floor.current) floor.current.emissiveIntensity = 1.8 * on;
     if (lamp.current) lamp.current.emissiveIntensity = 3 * on;
   });
 
@@ -195,10 +193,6 @@ function Door({ cx, cz, depth, state }: { cx: number; cz: number; depth: number;
         <sphereGeometry args={[0.15, 20, 20]} />
         <meshStandardMaterial ref={lamp} color={color} emissive={color} emissiveIntensity={3} />
       </mesh>
-      <mesh position={[0, 0.055, 0.85]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[0.7, 40]} />
-        <meshStandardMaterial ref={floor} color={color} emissive={color} emissiveIntensity={1.8} transparent opacity={0.85} />
-      </mesh>
       {state === "maint" && (
         <group position={[1.9, 0, 0.9]} rotation={[0, -0.25, 0]}>
           {[-0.55, 0.55].map((x) => (
@@ -215,6 +209,26 @@ function Door({ cx, cz, depth, state }: { cx: number; cz: number; depth: number;
         </group>
       )}
     </group>
+  );
+}
+
+// ---------------------------------------------------------------- vách ngắn (che tầm nhìn từ ngoài vào)
+/** Vách ngắn ở 2 cạnh mở (đông + nam, chừa cửa ở giữa cạnh nam): nửa dưới đặc, nửa trên kính mờ, mép trên có dải màu. */
+function Partitions({ cx, cz, W, D, color, gap = 0.95 }: { cx: number; cz: number; W: number; D: number; color: string; gap?: number }) {
+  const seg = (key: string, x: number, z: number, w: number, d: number) => (
+    <group key={key} position={[x, 0, z]}>
+      <B p={[0, 0.3, 0]} s={[w, 0.6, d]} c="#f4f6fb" rough={0.5} />
+      <B p={[0, 0.88, 0]} s={[w, 0.56, d * 0.7]} c="#e6edf9" op={0.5} rough={0.2} />
+      <B p={[0, 1.18, 0]} s={[w + 0.02, 0.05, d + 0.04]} c={color} emissive={color} ei={0.6} />
+    </group>
+  );
+  const half = W / 2 - gap;
+  return (
+    <>
+      {seg("e", cx + W / 2 - 0.05, cz, 0.1, D)}
+      {seg("sl", cx - (W / 2 + gap) / 2, cz + D / 2 - 0.05, half, 0.1)}
+      {seg("sr", cx + (W / 2 + gap) / 2, cz + D / 2 - 0.05, half, 0.1)}
+    </>
   );
 }
 
@@ -273,6 +287,7 @@ function Zone({ d, active, door, data, states, onTv }: { d: DeptMeta; active: bo
       <B p={[cx - W / 2, 1.3, cz + D / 2]} s={[0.1, 2.6, 0.1]} c="#f5f7fb" metal={0.5} rough={0.3} />
       <Tv d={d} data={data} states={states} onClick={onTv} scale={special ? 1.2 : 1} />
       <Door cx={cx} cz={cz} depth={D} state={door} />
+      <Partitions cx={cx} cz={cz} W={W} D={D} color={d.color} />
       {special && (
         <Suspense fallback={null}>
           <HqDecor d={d} />
@@ -635,6 +650,80 @@ function MeetingRoom() {
   );
 }
 
+/** Một bàn làm việc của nhân viên (màn hình sáng khi có người trực). */
+function DeskUnit({ x, z, color, on }: { x: number; z: number; color: string; on: boolean }) {
+  const screen = new THREE.Color(on ? color : "#8da2c4");
+  return (
+    <group position={[x, 0, z]}>
+      <B p={[0, 0.76, 0]} s={[1.5, 0.06, 0.85]} c="#fbfbfd" rough={0.35} />
+      {[-1, 1].map((s) => (
+        <B key={s} p={[s * 0.68, 0.37, 0]} s={[0.05, 0.74, 0.7]} c="#b9bfcc" metal={0.6} rough={0.35} />
+      ))}
+      <group position={[0, 0.8, -0.18]}>
+        <B p={[0, 0.3, 0]} s={[0.7, 0.44, 0.03]} c="#e9ebf0" metal={0.3} rough={0.35} />
+        <mesh position={[0, 0.31, 0.02]}>
+          <planeGeometry args={[0.64, 0.37]} />
+          <meshStandardMaterial color={screen} emissive={screen} emissiveIntensity={on ? 1.1 : 0.3} />
+        </mesh>
+        <B p={[0, 0.05, 0]} s={[0.05, 0.1, 0.05]} c="#c9ced9" metal={0.5} cast={false} />
+      </group>
+      <B p={[0, 0.8, 0.2]} s={[0.45, 0.02, 0.15]} c="#e7e9ef" cast={false} />
+      <group position={[0, 0, 0.95]}>
+        <B p={[0, 0.45, 0]} s={[0.5, 0.07, 0.5]} c="#2b3040" rough={0.5} />
+        <B p={[0, 0.74, 0.24]} s={[0.48, 0.55, 0.05]} c="#2b3040" rough={0.5} />
+        <Cyl p={[0, 0.22, 0]} r={0.04} h={0.45} c="#d7dbe6" seg={8} metal={0.6} />
+      </group>
+    </group>
+  );
+}
+
+/** Phòng làm việc của Reader / Saler: bàn có vách ngăn từng chỗ, vách ngắn quanh phòng; nhân viên đang trực ngồi ở đây. */
+export function WorkRooms({ occupied }: { occupied: Record<StaffRole, boolean[]> }) {
+  return (
+    <>
+      {WORKROOMS.map((r) => {
+        const [cx, cz] = r.center;
+        const [W, D] = r.size;
+        const cols = [...new Set(r.desks.map((d) => d.x))].sort((a, b) => a - b);
+        return (
+          <group key={r.id}>
+            <RoundedBox args={[W - 0.1, 0.05, D - 0.1]} radius={0.2} smoothness={4} position={[cx, 0.03, cz]} receiveShadow>
+              <meshStandardMaterial color={r.color} transparent opacity={0.22} roughness={0.5} />
+            </RoundedBox>
+            {[
+              [W - 0.3, 0.05, cx, cz - D / 2 + 0.08],
+              [W - 0.3, 0.05, cx, cz + D / 2 - 0.08],
+              [0.05, D - 0.3, cx - W / 2 + 0.08, cz],
+              [0.05, D - 0.3, cx + W / 2 - 0.08, cz],
+            ].map(([w, d, x, z]) => (
+              <mesh key={`${x}${z}`} position={[x, 0.045, z]}>
+                <boxGeometry args={[w, 0.02, d]} />
+                <meshStandardMaterial color={r.color} emissive={r.color} emissiveIntensity={0.7} />
+              </mesh>
+            ))}
+            <B p={[cx, 1.3, cz - D / 2]} s={[W, 2.6, 0.12]} c="#f7f8fc" rough={0.4} />
+            <B p={[cx, 2.62, cz - D / 2 + 0.01]} s={[W + 0.02, 0.08, 0.14]} c={r.color} emissive={r.color} ei={0.9} />
+            <B p={[cx - W / 2, 1.3, cz]} s={[0.05, 2.6, D]} c={GLASS} op={0.22} rough={0.1} />
+            <Door cx={cx} cz={cz} depth={D} state="free" />
+            <Partitions cx={cx} cz={cz} W={W} D={D} color={r.color} />
+            {r.desks.map((d, i) => (
+              <DeskUnit key={i} x={d.x} z={d.z} color={r.color} on={!!occupied[r.id][i]} />
+            ))}
+            {/* vách ngăn giữa các cột bàn */}
+            {cols.slice(0, -1).map((x, i) => {
+              const mid = (x + cols[i + 1]) / 2;
+              if (Math.abs(mid - cx) < 0.5) return null; // giữa phòng là lối đi
+              return [r.desks[0].z, r.desks[r.desks.length - 1].z].map((z) => <B key={`${mid}${z}`} p={[mid, 0.55, z + 0.1]} s={[0.05, 1.1, 1.5]} c="#e6edf9" op={0.85} rough={0.4} />);
+            })}
+            <Plant position={[cx - W / 2 + 0.6, 0, cz - D / 2 + 0.6]} scale={0.7} />
+            <Plant position={[cx + W / 2 - 0.6, 0, cz - D / 2 + 0.6]} scale={0.7} />
+          </group>
+        );
+      })}
+    </>
+  );
+}
+
 export function Buildings() {
   return (
     <>
@@ -643,6 +732,7 @@ export function Buildings() {
       <RestRoom />
       <MeetingRoom />
       <Door cx={0} cz={-12} depth={6} state="free" />
+      <Partitions cx={0} cz={-12} W={7} D={6} color="#f59e0b" />
     </>
   );
 }
@@ -677,8 +767,8 @@ const FCZ = (WORLD.z0 + WORLD.z1) / 2;
 
 const ROADS: [number, number, number, number][] = [
   // [tâm x, tâm z, rộng, sâu]
-  [0, -7.5, 40, 1.6],
-  [-1, 14.25, 36, 1.6],
+  [4, -7.5, 52, 1.6],
+  [4, 14.25, 52, 1.6],
   [-6, 3.4, 1.6, 22],
   [6, 3.4, 1.6, 22],
 ];
@@ -687,10 +777,11 @@ const TREES: [number, number][] = [
   [-5.75, -12.6], [5.75, -12.6], [-19, -11], [19, -11], [-19.5, 3], [19.5, 3], [-9.5, 1.5], [9.5, 1.5],
   [-8.5, -3.8], [8.5, -3.8], [-17.5, 12.5], [17.5, 13], [-19, 22.5], [23.5, 20],
   [-6.5, 15.2], [6.5, 15.2], [22.5, -4], [22.5, 14], [-8.5, 4.6], [8.5, 4.6],
+  [-24.5, 14], [29.5, -4], [29.5, 11], [-24.5, -10],
 ];
 
 export function Hall() {
-  const mullionsX = [-20, -15, -10, -5, 0, 5, 10, 15, 20, 25];
+  const mullionsX = [-25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 30];
   const mullionsZ = [-15, -9, -3, 3, 9, 15, 21];
   return (
     <>

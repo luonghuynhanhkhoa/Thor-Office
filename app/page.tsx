@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
+import type { DutyStaff } from "@/lib/dutyTypes";
 
 const Office3D = dynamic(() => import("@/components/Office3D"), {
   ssr: false,
@@ -91,7 +92,25 @@ export default function Home() {
   const [tv, setTv] = useState<TvData | null>(null);
   const [tvOpen, setTvOpen] = useState<DeptId | null>(null);
   const [maint, setMaint] = useState<Partial<Record<DeptId, boolean>>>({});
+  const [duty, setDuty] = useState<DutyStaff[]>([]);
   const jobId = useRef<string | null>(null);
+
+  // Nhân viên Reader/Saler đang trong giờ trực (làm mới mỗi 30 giây). Thêm ?duty=demo vào địa chỉ để xem thử khi chưa có ai trực.
+  useEffect(() => {
+    let alive = true;
+    const demo = new URLSearchParams(window.location.search).get("duty") === "demo";
+    const load = () =>
+      fetch(`/api/duty${demo ? "?demo=1" : ""}`, { cache: "no-store" })
+        .then((r) => (r.ok ? (r.json() as Promise<DutyStaff[]>) : []))
+        .then((d) => alive && Array.isArray(d) && setDuty(d))
+        .catch(() => undefined);
+    void load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
 
   // Phòng đang chỉnh sửa: đọc lúc mở trang, làm mới mỗi 10 giây (Claude hoặc anh có thể bật/tắt).
   useEffect(() => {
@@ -205,7 +224,7 @@ export default function Home() {
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[#eef3ff] text-slate-800">
       <div className="absolute inset-0">
-        <Office3D states={states} selected={selected} onSelect={setSelected} tv={tv} onTvClick={setTvOpen} maint={maint} />
+        <Office3D states={states} selected={selected} onSelect={setSelected} tv={tv} onTvClick={setTvOpen} maint={maint} duty={duty} />
       </div>
 
       {/* Tiêu đề + chế độ chạy */}
@@ -273,6 +292,14 @@ export default function Home() {
                   <b className="text-slate-800">{l.name}</b> — {l.scope}
                 </li>
               ))}
+            </ul>
+            <div className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              Nhân viên trực hôm nay ({duty.filter((s) => s.state === "on").length} đang trực · {duty.filter((s) => s.state !== "on").length} chưa/nghỉ)
+            </div>
+            <ul className="space-y-1 text-[11px] text-slate-600">
+              <li className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: "#34d399" }} /> Reader ({duty.filter((s) => s.role === "reader" && s.state === "on").length} đang trực) — ngồi phòng làm việc Reader (góc đông bắc)</li>
+              <li className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: "#fb923c" }} /> Saler ({duty.filter((s) => s.role === "saler" && s.state === "on").length} đang trực) — ngồi phòng làm việc Saler (phía tây)</li>
+              <li className="text-slate-500">Chưa tới giờ trực / nghỉ giữa ca: đi dạo quanh công ty hoặc nghỉ ở quán, gym, phòng nghỉ. Tên hiện trên đầu nhân vật.</li>
             </ul>
             <div className="mb-1.5 mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">Đèn trước cửa phòng</div>
             <ul className="space-y-1 text-[11px] text-slate-600">

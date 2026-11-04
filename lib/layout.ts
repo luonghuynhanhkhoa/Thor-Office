@@ -5,10 +5,10 @@ import { DEPTS, DEPT_BY_ID, type AgentMeta } from "@/lib/agentsMeta";
  * Hệ trục: x sang phải, z hướng về phía camera (z nhỏ = "phía trên" màn hình).
  * Mỗi khu là một công trình RIÊNG; AI đi giữa các khu bằng đường tự tìm (A*) quanh các công trình.
  */
-export const WORLD = { x0: -21, x1: 25.5, z0: -17, z1: 25 };
+export const WORLD = { x0: -26.5, x1: 31.5, z0: -17, z1: 25 };
 
 export type LoungeId = "tea" | "dining" | "gym" | "rest" | "meeting";
-export type Pose = "sip" | "eat" | "run" | "lift" | "nap" | "meet" | "stretch" | "box";
+export type Pose = "sip" | "eat" | "run" | "lift" | "nap" | "meet" | "stretch" | "box" | "type";
 
 export type Spot = {
   /** Toạ độ so với tâm khu. */
@@ -126,9 +126,44 @@ export const LOUNGES: LoungeMeta[] = [
 export const LOUNGE_BY_ID = Object.fromEntries(LOUNGES.map((l) => [l.id, l])) as Record<LoungeId, LoungeMeta>;
 export const LOUNGE_IDS = LOUNGES.map((l) => l.id);
 
+// ------------------------------------------------------------------ phòng làm việc của Reader / Saler (người thật)
+export type StaffRole = "reader" | "saler";
+export type Desk = { x: number; z: number; row: 0 | 1 };
+export type WorkRoom = {
+  id: StaffRole;
+  name: string;
+  color: string;
+  center: [number, number];
+  size: [number, number];
+  desks: Desk[];
+  /** z của lối đi giữa 2 hàng bàn, z đứng lên của hàng bàn dưới. */
+  aisleZ: number;
+  standZ: number;
+};
+
+function makeWorkRoom(id: StaffRole, name: string, color: string, center: [number, number], size: [number, number], cols: number[], rowZ: [number, number], aisle: number, stand: number): WorkRoom {
+  const [, cz] = center;
+  const desks: Desk[] = [];
+  ([0, 1] as const).forEach((row) => cols.forEach((cx) => desks.push({ x: center[0] + cx, z: cz + rowZ[row], row })));
+  return { id, name, color, center, size, desks, aisleZ: cz + aisle, standZ: cz + stand };
+}
+
+export const WORKROOMS: WorkRoom[] = [
+  makeWorkRoom("reader", "Phòng làm việc Reader", "#34d399", [24.8, -12], [12.8, 7], [-5.2, -3.3, -1.4, 1.4, 3.3, 5.2], [-1.7, 1.3], 0.2, 2.95),
+  makeWorkRoom("saler", "Phòng làm việc Saler", "#fb923c", [-21, 8], [8.4, 6], [-2.9, -1.0, 1.0, 2.9], [-1.2, 1.4], 0.45, 2.8),
+];
+export const WORKROOM_BY_ID = Object.fromEntries(WORKROOMS.map((r) => [r.id, r])) as Record<StaffRole, WorkRoom>;
+
+/** Các điểm ngoài trời để nhân viên chưa tới giờ trực đi dạo quanh công ty. */
+export const WANDER_POINTS: [number, number][] = [
+  [-6, -7.5], [6, -7.5], [-18, -7.5], [20, -6], [0, 5.8], [-6, 2], [6, 2], [-6, 11], [6, 11], [-19, 2],
+  [18.5, 2.5], [27, 3], [-6, 14.5], [6, 14.5], [-17, 14.5], [18, 14.5], [27, 14], [-24, -4], [-17.5, -12], [16.2, -12],
+];
+
 /** Các công trình (tâm x, tâm z, rộng, sâu) — chướng ngại khi tìm đường ngoài trời. */
 export const BUILDINGS: [number, number, number, number][] = [
   ...DEPTS.map((d) => [d.center[0], d.center[1], d.size[0], d.size[1]] as [number, number, number, number]),
+  ...WORKROOMS.map((r) => [r.center[0], r.center[1], r.size[0], r.size[1]] as [number, number, number, number]),
   [-10, 19.5, 16, 7], // quán Trà & Ăn
   [10, 19.5, 12, 7], // gym
   [21, 8, 6, 5], // phòng nghỉ
@@ -358,6 +393,63 @@ export function buildRoute(meta: AgentMeta, lounge: LoungeMeta, spot: Spot): Rou
   pts.push([lx + spot.x, lz + spot.z]);
 
   const clean = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 0.01);
+  const cum = [0];
+  for (let i = 1; i < clean.length; i++) cum.push(cum[i - 1] + Math.hypot(clean[i][0] - clean[i - 1][0], clean[i][1] - clean[i - 1][1]));
+  return { pts: clean, cum, total: cum[cum.length - 1] };
+}
+
+// ------------------------------------------------------------------ đường đi của nhân viên thật (Reader/Saler)
+export type PlaceNode =
+  | { kind: "out"; x: number; z: number }
+  | { kind: "lounge"; id: LoungeId; spot: Spot }
+  | { kind: "desk"; room: StaffRole; idx: number };
+
+/** Từ ghế ngồi → lối đi giữa hàng bàn → cửa phòng → điểm ngoài cửa. */
+export function deskHomePts(room: WorkRoom, idx: number): [number, number][] {
+  const d = room.desks[idx];
+  const [cx, cz] = room.center;
+  const doorZ = cz + room.size[1] / 2;
+  const lane = d.row === 0 ? room.aisleZ : room.standZ;
+  return [[d.x, d.z + 0.95], [d.x, lane], [cx, lane], [cx, doorZ], [cx, doorZ + 0.8]];
+}
+
+export const deskChair = (room: WorkRoom, idx: number): [number, number] => [room.desks[idx].x, room.desks[idx].z + 0.95];
+
+export function nodePos(n: PlaceNode): [number, number] {
+  if (n.kind === "out") return [n.x, n.z];
+  if (n.kind === "desk") return deskChair(WORKROOM_BY_ID[n.room], n.idx);
+  const l = LOUNGE_BY_ID[n.id];
+  return [l.center[0] + n.spot.x, l.center[1] + n.spot.z];
+}
+
+function loungeEnter(l: LoungeMeta, spot: Spot): [number, number][] {
+  return [...l.inside, ...(spot.via ?? []).map(([vx, vz]) => [l.center[0] + vx, l.center[1] + vz] as [number, number]), [l.center[0] + spot.x, l.center[1] + spot.z]];
+}
+
+/** Danh sách điểm đi RA khỏi nút (kết thúc ở một điểm ngoài trời). */
+function exitList(n: PlaceNode): [number, number][] {
+  if (n.kind === "out") return [[n.x, n.z]];
+  if (n.kind === "desk") return deskHomePts(WORKROOM_BY_ID[n.room], n.idx);
+  const l = LOUNGE_BY_ID[n.id];
+  return [...loungeEnter(l, n.spot).reverse(), l.mouth];
+}
+
+/** Danh sách điểm đi VÀO nút (bắt đầu từ một điểm ngoài trời). */
+function enterList(n: PlaceNode): [number, number][] {
+  if (n.kind === "out") return [[n.x, n.z]];
+  if (n.kind === "desk") return deskHomePts(WORKROOM_BY_ID[n.room], n.idx).reverse();
+  const l = LOUNGE_BY_ID[n.id];
+  return [l.mouth, ...loungeEnter(l, n.spot)];
+}
+
+/** Tuyến đi từ nút a tới nút b (ra khỏi a → tự tìm đường ngoài trời → vào b). */
+export function routeBetween(a: PlaceNode, b: PlaceNode): Route {
+  const E = exitList(a);
+  const N = enterList(b);
+  const mid = findPath(E[E.length - 1], N[0]);
+  const pts = [...E, ...mid.slice(1), ...N.slice(1)];
+  const clean = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 0.01);
+  if (clean.length < 2) clean.push([clean[0][0] + 0.01, clean[0][1]]);
   const cum = [0];
   for (let i = 1; i < clean.length; i++) cum.push(cum[i - 1] + Math.hypot(clean[i][0] - clean[i - 1][0], clean[i][1] - clean[i - 1][1]));
   return { pts: clean, cum, total: cum[cum.length - 1] };
