@@ -2,6 +2,12 @@ import { NextResponse, connection } from "next/server";
 import { envProblem, fetchAll, passwordLogin, thorConnected } from "@/lib/thorData";
 import { SESSION_COOKIE, SESSION_TTL_S, authMode, signSession } from "@/lib/session";
 
+/** Tên hiển thị riêng cho tài khoản không gắn nhân sự (vd admin). Khoá = email viết thường. */
+const DISPLAY_NAMES: Record<string, string> = {
+  "luonghuynhanhkhoa@gmail.com": "Thỏ",
+  "meobangchu@thor.com": "Meo",
+};
+
 /** GET: cho trang đăng nhập biết chế độ. POST: đăng nhập bằng email + mật khẩu CỦA TÀI KHOẢN THOR, rồi cấp phiên đã ký. */
 export async function GET() {
   await connection();
@@ -38,6 +44,7 @@ export async function POST(request: Request) {
       const s = (await fetchAll<{ id: string; name: string }>("staff", `select=id,name&id=eq.${staffIds[0]}&order=id.asc`))[0];
       if (s) name = s.name;
     }
+    name = DISPLAY_NAMES[(prof.email ?? email).toLowerCase()] ?? DISPLAY_NAMES[email] ?? name;
     const token = await signSession({ uid: user.id, email: user.email, name, admin: prof.role === "admin" || prof.role2 === "admin", role: prof.role, staffIds });
     const res = NextResponse.json({ ok: true });
     res.cookies.set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: new URL(request.url).protocol === "https:", path: "/", maxAge: SESSION_TTL_S });
