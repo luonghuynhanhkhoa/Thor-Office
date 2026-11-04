@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
-import type { DutyStaff } from "@/lib/dutyTypes";
+import { formatDong, staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
 
 const Office3D = dynamic(() => import("@/components/Office3D"), {
   ssr: false,
@@ -92,18 +92,32 @@ export default function Home() {
   const [tv, setTv] = useState<TvData | null>(null);
   const [tvOpen, setTvOpen] = useState<DeptId | null>(null);
   const [maint, setMaint] = useState<Partial<Record<DeptId, boolean>>>({});
-  const [duty, setDuty] = useState<DutyStaff[]>([]);
+  const [dutyAll, setDutyAll] = useState<DutyStaff[]>([]);
+  const [boardOpen, setBoardOpen] = useState<BoardKind | null>(null);
+  const [sales, setSales] = useState<SalesToday | null>(null);
+  const [cases, setCases] = useState<CasesToday | null>(null);
+  // Nhân vật chỉ hiện cho người chưa hết ca; người đã hết ca chỉ có trên bảng ca.
+  const duty = useMemo(() => dutyAll.filter((s) => s.state !== "done"), [dutyAll]);
   const jobId = useRef<string | null>(null);
 
   // Nhân viên Reader/Saler đang trong giờ trực (làm mới mỗi 30 giây). Thêm ?duty=demo vào địa chỉ để xem thử khi chưa có ai trực.
   useEffect(() => {
     let alive = true;
     const demo = new URLSearchParams(window.location.search).get("duty") === "demo";
-    const load = () =>
+    const load = () => {
       fetch(`/api/duty${demo ? "?demo=1" : ""}`, { cache: "no-store" })
         .then((r) => (r.ok ? (r.json() as Promise<DutyStaff[]>) : []))
-        .then((d) => alive && Array.isArray(d) && setDuty(d))
+        .then((d) => alive && Array.isArray(d) && setDutyAll(d))
         .catch(() => undefined);
+      fetch(`/api/cases${demo ? "?demo=1" : ""}`, { cache: "no-store" })
+        .then((r) => (r.ok ? (r.json() as Promise<CasesToday>) : null))
+        .then((d) => alive && d && setCases(d))
+        .catch(() => undefined);
+      fetch(`/api/sales${demo ? "?demo=1" : ""}`, { cache: "no-store" })
+        .then((r) => (r.ok ? (r.json() as Promise<SalesToday>) : null))
+        .then((d) => alive && d && setSales(d))
+        .catch(() => undefined);
+    };
     void load();
     const t = setInterval(load, 30_000);
     return () => {
@@ -224,7 +238,25 @@ export default function Home() {
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[#eef3ff] text-slate-800">
       <div className="absolute inset-0">
-        <Office3D states={states} selected={selected} onSelect={setSelected} tv={tv} onTvClick={setTvOpen} maint={maint} duty={duty} />
+        <Office3D
+          states={states}
+          selected={selected}
+          onSelect={setSelected}
+          tv={tv}
+          onTvClick={(id) => {
+            setBoardOpen(null);
+            setTvOpen(id);
+          }}
+          maint={maint}
+          duty={duty}
+          board={dutyAll}
+          sales={sales}
+          cases={cases}
+          onBoardClick={(k) => {
+            setTvOpen(null);
+            setBoardOpen(k);
+          }}
+        />
       </div>
 
       {/* Tiêu đề + chế độ chạy */}
@@ -349,16 +381,145 @@ export default function Home() {
         </div>
       )}
 
+      {/* Bảng ca trực hôm nay của phòng làm việc Reader / Saler (phóng to) */}
+      {boardOpen && (
+        <div className="absolute top-4 z-20 flex max-h-[calc(100dvh-8rem)] w-[min(420px,calc(100vw-2rem))] flex-col rounded-2xl border border-slate-700 bg-[#0b1226] p-4 text-white shadow-2xl" style={{ right: panelOpen ? 372 : 16 }}>
+          <div className="-mx-4 -mt-4 mb-3 flex items-center justify-between rounded-t-2xl px-4 py-2.5 text-[#0b1226]" style={{ background: boardOpen === "sales" ? "#fb923c" : "#34d399" }}>
+            <div className="text-sm font-extrabold uppercase tracking-wide">
+              {boardOpen === "shift" ? "📋 Ca trực hôm nay · Reader" : boardOpen === "cases" ? "🗂 Ca đang xử lý · Reader" : "💰 Bán hàng hôm nay · Saler"}
+            </div>
+            <button onClick={() => setBoardOpen(null)} className="rounded px-2 text-lg leading-none hover:bg-black/10" aria-label="Đóng">
+              ×
+            </button>
+          </div>
+          {boardOpen === "cases" ? (
+            <>
+              <div className="mb-2 grid grid-cols-3 gap-2 rounded-xl bg-white/5 p-3 text-center">
+                <div>
+                  <div className="text-[11px] text-slate-400">Đơn Sale giao</div>
+                  <div className="text-xl font-extrabold text-yellow-300">{cases?.totalOrders ?? 0}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-400">Ca đang đợi</div>
+                  <div className="text-xl font-extrabold">{cases?.totalWaiting ?? 0}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-400">Ca đã xong</div>
+                  <div className="text-xl font-extrabold text-green-400">{cases?.totalDone ?? 0}</div>
+                </div>
+              </div>
+              {cases?.readers.length ? (
+                <ul className="min-h-0 flex-1 divide-y divide-white/10 overflow-y-auto">
+                  {cases.readers.map((r) => {
+                    const idx = dutyAll.find((d) => d.id === r.id)?.idx;
+                    return (
+                      <li key={r.id} className="py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: idx === undefined ? "#64748b" : staffLook(idx).shirt }} />
+                          <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{r.name}</span>
+                          <span className="text-[13px] font-bold text-yellow-300">{r.ordersToday} đơn</span>
+                        </div>
+                        <div className="ml-5 mt-0.5 text-[12px]">
+                          {r.handling ? <span className="font-bold text-green-400">▶ đang xử lý ca {r.handling}</span> : <span className="text-slate-500">chưa có ca đến giờ</span>}
+                          <span className="text-slate-400"> · xong {r.done} ca</span>
+                        </div>
+                        <div className="ml-5 mt-0.5 text-[11px] text-slate-300">Ca đang đợi: {r.waiting.length ? r.waiting.join(" · ") : "không có"}</div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="py-3 text-sm text-slate-300">Hôm nay chưa có ca nào được Sale giao.</div>
+              )}
+              <div className="mt-2 text-[11px] text-slate-400">Ca = giờ hẹn Sale gắn vào đơn (Danh sách đợi của Reader) · đơn = đơn hôm nay gán cho Reader · làm mới mỗi 30 giây</div>
+            </>
+          ) : boardOpen === "sales" ? (
+            (() => {
+              const shift = new Map(dutyAll.filter((s) => s.role === "saler").map((s) => [s.id, s]));
+              const rows = [
+                ...dutyAll.filter((s) => s.role === "saler").map((s) => ({ id: s.id, name: s.name, d: s, s: sales?.salers.find((x) => x.id === s.id) })),
+                ...(sales?.salers ?? []).filter((x) => !shift.has(x.id)).map((x) => ({ id: x.id, name: x.name, d: undefined, s: x })),
+              ].sort((a, b) => (b.s?.revenue ?? 0) - (a.s?.revenue ?? 0));
+              return (
+                <>
+                  <div className="mb-2 grid grid-cols-2 gap-2 rounded-xl bg-white/5 p-3">
+                    <div>
+                      <div className="text-[11px] text-slate-400">Tổng doanh thu hôm nay</div>
+                      <div className="text-xl font-extrabold text-yellow-300">{formatDong(sales?.totalRevenue ?? 0)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[11px] text-slate-400">Khách · Đơn</div>
+                      <div className="text-xl font-extrabold">
+                        {sales?.totalCustomers ?? 0} · {sales?.totalOrders ?? 0}
+                      </div>
+                    </div>
+                  </div>
+                  {rows.length ? (
+                    <ul className="min-h-0 flex-1 divide-y divide-white/10 overflow-y-auto">
+                      {rows.map((r) => (
+                        <li key={r.id} className="py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: r.d ? staffLook(r.d.idx).shirt : "#64748b" }} />
+                            <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{r.name}</span>
+                            <span className="text-[13px] font-bold text-green-400">{formatDong(r.s?.revenue ?? 0)}</span>
+                          </div>
+                          <div className="ml-5 mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-slate-400">
+                            <span>Ca: {r.d ? `${r.d.from ?? "?"}–${r.d.to ?? "?"}${r.d.note ? ` (${r.d.note})` : ""}` : "không có ca"}</span>
+                            <span>Khách: {r.s?.customers ?? 0}</span>
+                            <span>Đơn: {r.s?.orders ?? 0}</span>
+                          </div>
+                          <div className="ml-5 mt-0.5 text-[11px] text-slate-300">
+                            Gói: {r.s?.packages.length ? r.s.packages.map((p) => `${p.name} ×${p.count}`).join(" · ") : "chưa bán"}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="py-3 text-sm text-slate-300">Hôm nay chưa có Saler nào có ca hoặc có đơn.</div>
+                  )}
+                  <div className="mt-2 text-[11px] text-slate-400">Theo đơn hôm nay trong Thor · làm mới mỗi 30 giây · doanh thu = tổng tiền các đơn đã nhập</div>
+                </>
+              );
+            })()
+          ) : (() => {
+            const list = dutyAll.filter((s) => s.role === "reader");
+            const mark = { on: ["đang trực", "text-green-400"], break: ["nghỉ giữa ca", "text-amber-300"], soon: ["sắp trực", "text-sky-300"], done: ["hết ca", "text-slate-400"] } as const;
+            return list.length ? (
+              <ul className="min-h-0 flex-1 divide-y divide-white/10 overflow-y-auto">
+                {list.map((s) => (
+                  <li key={s.id} className="flex items-center gap-3 py-1.5">
+                    <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: staffLook(s.idx).shirt }} />
+                    <span className={`min-w-0 flex-1 truncate text-[14px] font-semibold ${s.state === "done" ? "text-slate-400" : ""}`}>{s.name}</span>
+                    <span className="text-right">
+                      <span className="block text-[14px] font-bold">
+                        {s.from ?? "?"}–{s.to ?? "?"}
+                      </span>
+                      <span className={`block text-[11px] ${mark[s.state][1]}`}>
+                        {mark[s.state][0]}
+                        {s.note ? ` · ${s.note}` : ""}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="py-3 text-sm text-slate-300">Hôm nay chưa có ai đăng ký ca.</div>
+            );
+          })()}
+          {boardOpen === "shift" && <div className="mt-2 text-[11px] text-slate-400">Theo bảng giờ trực của Thor · làm mới mỗi 30 giây · xếp theo giờ vào ca</div>}
+        </div>
+      )}
+
       {/* Bảng kết quả bên phải */}
-      <div className="absolute bottom-24 right-4 top-4 z-10 flex w-[min(340px,calc(100vw-2rem))] flex-col">
+      <div className="pointer-events-none absolute bottom-24 right-4 top-4 z-10 flex w-[min(340px,calc(100vw-2rem))] flex-col">
         <button
           onClick={() => setPanelOpen((v) => !v)}
-          className="mb-2 self-end rounded-lg border border-slate-200 bg-white/85 px-3 py-1 text-xs text-slate-600 backdrop-blur hover:bg-white"
+          className="pointer-events-auto mb-2 self-end rounded-lg border border-slate-200 bg-white/85 px-3 py-1 text-xs text-slate-600 backdrop-blur hover:bg-white"
         >
           {panelOpen ? "Ẩn bảng ▸" : "◂ Hiện bảng"}
         </button>
         {panelOpen && (
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white/88 p-4 shadow-sm backdrop-blur">
+          <div className="pointer-events-auto min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white/88 p-4 shadow-sm backdrop-blur">
             {selected && sel && selMeta ? (
               <div>
                 <div className="mb-1 flex items-center gap-2 text-sm font-bold text-slate-900">

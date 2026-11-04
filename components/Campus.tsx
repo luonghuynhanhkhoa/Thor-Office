@@ -7,6 +7,7 @@ import * as THREE from "three";
 import { AGENTS, type AgentState, type AgentStatus, type DeptId, type DeptMeta, type AgentId } from "@/lib/agentsMeta";
 import { WORKROOMS, WORLD, type StaffRole } from "@/lib/layout";
 import type { TvLine } from "@/lib/tv";
+import { formatDong, staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalerSales, type SalesToday } from "@/lib/dutyTypes";
 import { B, Ball, Chair, Cyl, Plant, STATUS_DOT, STATUS_TEXT, TWO_PI, Tree } from "@/components/sceneKit";
 
 /**
@@ -677,8 +678,287 @@ function DeskUnit({ x, z, color, on }: { x: number; z: number; color: string; on
   );
 }
 
+const SHIFT_MARK: Record<DutyStaff["state"], { t: string; c: string }> = {
+  on: { t: "● đang trực", c: "#4ade80" },
+  break: { t: "☕ nghỉ giữa ca", c: "#fbbf24" },
+  soon: { t: "⏳ sắp trực", c: "#93c5fd" },
+  done: { t: "✓ hết ca", c: "#94a3b8" },
+};
+
+function drawBoard(c: HTMLCanvasElement, title: string, color: string, list: DutyStaff[]) {
+  const x = c.getContext("2d");
+  if (!x) return;
+  const W = c.width;
+  const H = c.height;
+  x.fillStyle = "#0b1226";
+  x.fillRect(0, 0, W, H);
+  x.fillStyle = color;
+  x.fillRect(0, 0, W, 62);
+  x.fillStyle = "#0b1226";
+  x.textBaseline = "middle";
+  x.textAlign = "left";
+  x.font = 'bold 32px "Segoe UI", Arial, sans-serif';
+  x.fillText(title, 24, 33);
+  x.textAlign = "right";
+  x.font = 'bold 24px "Segoe UI", Arial, sans-serif';
+  x.fillText(`${list.filter((s) => s.state === "on").length} đang trực · ${list.length} có ca hôm nay`, W - 24, 33);
+  if (!list.length) {
+    x.fillStyle = "#aab6d6";
+    x.textAlign = "center";
+    x.font = '28px "Segoe UI", Arial, sans-serif';
+    x.fillText("Hôm nay chưa có ai đăng ký ca", W / 2, H / 2 + 20);
+    return;
+  }
+  const perCol = 7;
+  const cols = Math.min(3, Math.ceil(list.length / perCol));
+  const colW = (W - 32) / cols;
+  const shown = list.slice(0, cols * perCol);
+  shown.forEach((s, i) => {
+    const col = Math.floor(i / perCol);
+    const row = i % perCol;
+    const x0 = 16 + col * colW;
+    const y = 96 + row * 48;
+    x.fillStyle = staffLook(s.idx).shirt;
+    x.beginPath();
+    x.arc(x0 + 14, y, 9, 0, TWO_PI);
+    x.fill();
+    x.textAlign = "left";
+    x.fillStyle = s.state === "done" ? "#94a3b8" : "#ffffff";
+    x.font = `bold ${cols > 2 ? 22 : 26}px "Segoe UI", Arial, sans-serif`;
+    x.fillText(s.name, x0 + 32, y - 8);
+    x.font = `${cols > 2 ? 17 : 19}px "Segoe UI", Arial, sans-serif`;
+    x.fillStyle = SHIFT_MARK[s.state].c;
+    x.fillText(SHIFT_MARK[s.state].t, x0 + 32, y + 15);
+    x.textAlign = "right";
+    x.fillStyle = "#e2e8f0";
+    x.font = `bold ${cols > 2 ? 22 : 26}px "Segoe UI", Arial, sans-serif`;
+    x.fillText(`${s.from ?? "?"}–${s.to ?? "?"}`, x0 + colW - 14, y - 8);
+    if (s.note) {
+      x.font = `${cols > 2 ? 15 : 17}px "Segoe UI", Arial, sans-serif`;
+      x.fillStyle = "#fcd34d";
+      x.fillText(s.note, x0 + colW - 14, y + 15);
+    }
+  });
+  if (list.length > shown.length) {
+    x.textAlign = "right";
+    x.fillStyle = "#aab6d6";
+    x.font = '20px "Segoe UI", Arial, sans-serif';
+    x.fillText(`+${list.length - shown.length} người khác — bấm bảng để xem đủ`, W - 24, H - 16);
+  }
+}
+
+function ellipsize(x: CanvasRenderingContext2D, text: string, maxW: number) {
+  if (x.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 1 && x.measureText(`${t}…`).width > maxW) t = t.slice(0, -1);
+  return `${t}…`;
+}
+
+/** Bảng của phòng Saler: mỗi người một dòng (ca · số khách · gói đã bán · doanh thu) + tổng khách và tổng doanh thu hôm nay. */
+function drawSalerBoard(c: HTMLCanvasElement, color: string, list: DutyStaff[], sales: SalesToday | null) {
+  const x = c.getContext("2d");
+  if (!x) return;
+  const W = c.width;
+  const H = c.height;
+  x.fillStyle = "#0b1226";
+  x.fillRect(0, 0, W, H);
+  x.fillStyle = color;
+  x.fillRect(0, 0, W, 62);
+  x.fillStyle = "#0b1226";
+  x.textBaseline = "middle";
+  x.textAlign = "left";
+  x.font = 'bold 32px "Segoe UI", Arial, sans-serif';
+  x.fillText("BÁN HÀNG HÔM NAY · SALER", 24, 33);
+  x.textAlign = "right";
+  x.font = 'bold 24px "Segoe UI", Arial, sans-serif';
+  x.fillText(`${list.filter((s) => s.state === "on").length} đang trực`, W - 24, 33);
+
+  // gộp: người có ca + người có đơn
+  const byId = new Map(sales?.salers.map((s) => [s.id, s]) ?? []);
+  const rows: { name: string; idx: number; duty?: DutyStaff; sale?: SalerSales }[] = list.map((d) => ({ name: d.name, idx: d.idx, duty: d, sale: byId.get(d.id) }));
+  for (const s of sales?.salers ?? []) if (!list.some((d) => d.id === s.id)) rows.push({ name: s.name, idx: 0, sale: s });
+  rows.sort((a, b) => (b.sale?.revenue ?? 0) - (a.sale?.revenue ?? 0));
+  x.textAlign = "left";
+  x.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+  x.fillStyle = "#7c8bb0";
+  x.fillText("NHÂN VIÊN", 52, 84);
+  x.fillText("CA", 250, 84);
+  x.fillText("KHÁCH", 400, 84);
+  x.fillText("GÓI ĐÃ BÁN", 500, 84);
+  x.textAlign = "right";
+  x.fillText("DOANH THU", W - 24, 84);
+  const shown = rows.slice(0, 6);
+  shown.forEach((r, i) => {
+    const y = 120 + i * 40;
+    x.fillStyle = r.duty ? staffLook(r.duty.idx).shirt : "#64748b";
+    x.beginPath();
+    x.arc(30, y, 8, 0, TWO_PI);
+    x.fill();
+    x.textAlign = "left";
+    x.fillStyle = "#ffffff";
+    x.font = 'bold 24px "Segoe UI", Arial, sans-serif';
+    x.fillText(ellipsize(x, r.name, 180), 52, y);
+    x.font = '22px "Segoe UI", Arial, sans-serif';
+    x.fillStyle = r.duty ? SHIFT_MARK[r.duty.state].c : "#64748b";
+    x.fillText(r.duty ? `${r.duty.from ?? "?"}–${r.duty.to ?? "?"}` : "không ca", 250, y);
+    x.fillStyle = "#e2e8f0";
+    x.font = 'bold 24px "Segoe UI", Arial, sans-serif';
+    x.fillText(String(r.sale?.customers ?? 0), 410, y);
+    x.font = '19px "Segoe UI", Arial, sans-serif';
+    x.fillStyle = "#cbd5e1";
+    const pk = r.sale?.packages.slice(0, 3).map((p) => `${p.name} ×${p.count}`).join(" · ") ?? "";
+    x.fillText(pk ? ellipsize(x, pk, 470) : "—", 500, y);
+    x.textAlign = "right";
+    x.font = 'bold 26px "Segoe UI", Arial, sans-serif';
+    x.fillStyle = r.sale && r.sale.revenue > 0 ? "#4ade80" : "#64748b";
+    x.fillText(r.sale ? formatDong(r.sale.revenue) : "0đ", W - 24, y);
+  });
+  if (rows.length > shown.length) {
+    x.textAlign = "left";
+    x.fillStyle = "#aab6d6";
+    x.font = '16px "Segoe UI", Arial, sans-serif';
+    x.fillText(`+${rows.length - shown.length} người khác — bấm bảng để xem đủ`, 52, 372);
+  }
+  x.fillStyle = "rgba(255,255,255,0.08)";
+  x.fillRect(0, H - 62, W, 62);
+  x.textAlign = "left";
+  x.fillStyle = "#aab6d6";
+  x.font = 'bold 22px "Segoe UI", Arial, sans-serif';
+  x.fillText(`TỔNG HÔM NAY · ${sales?.totalCustomers ?? 0} khách · ${sales?.totalOrders ?? 0} đơn`, 24, H - 31);
+  x.textAlign = "right";
+  x.fillStyle = "#fde047";
+  x.font = 'bold 36px "Segoe UI", Arial, sans-serif';
+  x.fillText(formatDong(sales?.totalRevenue ?? 0), W - 24, H - 31);
+}
+
+function drawCasesBoard(c: HTMLCanvasElement, color: string, cases: CasesToday | null, idxOf: Map<string, number>) {
+  const x = c.getContext("2d");
+  if (!x) return;
+  const W = c.width;
+  const H = c.height;
+  x.fillStyle = "#0b1226";
+  x.fillRect(0, 0, W, H);
+  x.fillStyle = color;
+  x.fillRect(0, 0, W, 62);
+  x.fillStyle = "#0b1226";
+  x.textBaseline = "middle";
+  x.textAlign = "left";
+  x.font = 'bold 32px "Segoe UI", Arial, sans-serif';
+  x.fillText("CA ĐANG XỬ LÝ · READER", 24, 33);
+  x.textAlign = "right";
+  x.font = 'bold 24px "Segoe UI", Arial, sans-serif';
+  x.fillText(`${cases?.totalWaiting ?? 0} ca đang đợi`, W - 24, 33);
+  x.textAlign = "left";
+  x.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+  x.fillStyle = "#7c8bb0";
+  x.fillText("READER", 52, 84);
+  x.fillText("ĐANG XỬ LÝ", 270, 84);
+  x.fillText("CA ĐANG ĐỢI (GIỜ HẸN)", 450, 84);
+  x.textAlign = "right";
+  x.fillText("ĐƠN HÔM NAY", W - 24, 84);
+  const rows = cases?.readers ?? [];
+  if (!rows.length) {
+    x.textAlign = "center";
+    x.fillStyle = "#aab6d6";
+    x.font = '28px "Segoe UI", Arial, sans-serif';
+    x.fillText("Hôm nay chưa có ca nào được Sale giao", W / 2, H / 2 + 10);
+  }
+  const shown = rows.slice(0, 7);
+  shown.forEach((r, i) => {
+    const y = 118 + i * 37;
+    const idx = idxOf.get(r.id);
+    x.fillStyle = idx === undefined ? "#64748b" : staffLook(idx).shirt;
+    x.beginPath();
+    x.arc(30, y, 8, 0, TWO_PI);
+    x.fill();
+    x.textAlign = "left";
+    x.fillStyle = "#ffffff";
+    x.font = 'bold 23px "Segoe UI", Arial, sans-serif';
+    x.fillText(ellipsize(x, r.name, 200), 52, y);
+    x.font = 'bold 23px "Segoe UI", Arial, sans-serif';
+    x.fillStyle = r.handling ? "#4ade80" : "#64748b";
+    x.fillText(r.handling ? `▶ ca ${r.handling}` : "—", 270, y);
+    x.font = '20px "Segoe UI", Arial, sans-serif';
+    x.fillStyle = "#cbd5e1";
+    const w = r.waiting.slice(0, 5).join(" · ") + (r.waiting.length > 5 ? ` +${r.waiting.length - 5}` : "");
+    x.fillText(r.waiting.length ? ellipsize(x, w, 440) : r.done ? `đã xong ${r.done} ca` : "không có ca đợi", 450, y);
+    x.textAlign = "right";
+    x.fillStyle = "#fde047";
+    x.font = 'bold 26px "Segoe UI", Arial, sans-serif';
+    x.fillText(String(r.ordersToday), W - 24, y);
+  });
+  if (rows.length > shown.length) {
+    x.textAlign = "left";
+    x.fillStyle = "#aab6d6";
+    x.font = '16px "Segoe UI", Arial, sans-serif';
+    x.fillText(`+${rows.length - shown.length} Reader khác — bấm tivi để xem đủ`, 52, 392);
+  }
+  x.fillStyle = "rgba(255,255,255,0.08)";
+  x.fillRect(0, H - 52, W, 52);
+  x.textAlign = "left";
+  x.fillStyle = "#aab6d6";
+  x.font = 'bold 22px "Segoe UI", Arial, sans-serif';
+  x.fillText(`TỔNG HÔM NAY · ${cases?.totalOrders ?? 0} đơn Sale giao · ${cases?.totalDone ?? 0} ca đã xong`, 24, H - 26);
+}
+
+function refreshTexture(tex: THREE.Texture) {
+  tex.needsUpdate = true;
+}
+
+/** Tivi trên tường phòng làm việc: Reader = ca trực + ca đang xử lý; Saler = bán hàng hôm nay. Bấm để xem bản phóng to. */
+function ShiftBoard({
+  room,
+  kind,
+  offsetX = 0,
+  list,
+  sales,
+  cases,
+  onClick,
+}: {
+  room: (typeof WORKROOMS)[number];
+  kind: BoardKind;
+  offsetX?: number;
+  list: DutyStaff[];
+  sales: SalesToday | null;
+  cases: CasesToday | null;
+  onClick: (k: BoardKind) => void;
+}) {
+  const [{ canvas, tex }] = useState(() => {
+    const c = document.createElement("canvas");
+    c.width = 1280;
+    c.height = 448;
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    return { canvas: c, tex: t };
+  });
+  const last = useRef("");
+  useFrame(() => {
+    const sig = JSON.stringify(kind === "sales" ? [list, sales] : kind === "cases" ? [list.map((s) => s.id), cases] : list);
+    if (sig === last.current) return;
+    last.current = sig;
+    if (kind === "sales") drawSalerBoard(canvas, room.color, list, sales);
+    else if (kind === "cases") drawCasesBoard(canvas, room.color, cases, new Map(list.map((s) => [s.id, s.idx])));
+    else drawBoard(canvas, "CA TRỰC HÔM NAY · READER", room.color, list);
+    refreshTexture(tex);
+  });
+  const [cx, cz] = room.center;
+  const w = Math.min(room.size[0] - 1.5, kind === "sales" ? 5.8 : 5.7);
+  const h = w * (448 / 1280);
+  return (
+    <group position={[cx + offsetX, 1.55, cz - room.size[1] / 2 + 0.1]} onClick={(e) => (e.stopPropagation(), onClick(kind))}>
+      <RoundedBox args={[w + 0.14, h + 0.14, 0.08]} radius={0.04} smoothness={3}>
+        <meshStandardMaterial color="#0f1424" roughness={0.3} metalness={0.5} />
+      </RoundedBox>
+      <mesh position={[0, 0, 0.045]}>
+        <planeGeometry args={[w, h]} />
+        <meshBasicMaterial map={tex} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
 /** Phòng làm việc của Reader / Saler: bàn có vách ngăn từng chỗ, vách ngắn quanh phòng; nhân viên đang trực ngồi ở đây. */
-export function WorkRooms({ occupied }: { occupied: Record<StaffRole, boolean[]> }) {
+export function WorkRooms({ occupied, board, sales, cases, onBoard }: { occupied: Record<StaffRole, boolean[]>; board: DutyStaff[]; sales: SalesToday | null; cases: CasesToday | null; onBoard: (k: BoardKind) => void }) {
   return (
     <>
       {WORKROOMS.map((r) => {
@@ -706,6 +986,14 @@ export function WorkRooms({ occupied }: { occupied: Record<StaffRole, boolean[]>
             <B p={[cx - W / 2, 1.3, cz]} s={[0.05, 2.6, D]} c={GLASS} op={0.22} rough={0.1} />
             <Door cx={cx} cz={cz} depth={D} state="free" />
             <Partitions cx={cx} cz={cz} W={W} D={D} color={r.color} />
+            {r.id === "reader" ? (
+              <>
+                <ShiftBoard room={r} kind="shift" offsetX={-3.2} list={board.filter((s) => s.role === "reader")} sales={sales} cases={cases} onClick={onBoard} />
+                <ShiftBoard room={r} kind="cases" offsetX={3.2} list={board.filter((s) => s.role === "reader")} sales={sales} cases={cases} onClick={onBoard} />
+              </>
+            ) : (
+              <ShiftBoard room={r} kind="sales" list={board.filter((s) => s.role === "saler")} sales={sales} cases={cases} onClick={onBoard} />
+            )}
             {r.desks.map((d, i) => (
               <DeskUnit key={i} x={d.x} z={d.z} color={r.color} on={!!occupied[r.id][i]} />
             ))}

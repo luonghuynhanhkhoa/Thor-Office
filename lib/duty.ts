@@ -36,20 +36,17 @@ export async function getDuty(): Promise<DutyStaff[]> {
     if (s === null || e === null) continue; // nghỉ cả ngày
     seen.add(p.id);
     const role = p.role as "reader" | "saler";
-    const base = { id: p.id, name: p.name, role, idx: order.indexOf(p.id), from: h.start_time?.slice(0, 5), to: h.end_time?.slice(0, 5) };
+    const offs = (h.slots ?? []).filter((x) => x.kind === "off" && !x.allDay && hhmmToMin(x.start ?? null) !== null && hhmmToMin(x.end ?? null) !== null);
+    const note = offs.length ? `nghỉ ${offs.map((x) => `${x.start?.slice(0, 5)}–${x.end?.slice(0, 5)}`).join(", ")}` : undefined;
+    const base = { id: p.id, name: p.name, role, idx: order.indexOf(p.id), from: h.start_time?.slice(0, 5), to: h.end_time?.slice(0, 5), note };
     if (now < s) out.push({ ...base, state: "soon" });
-    else if (now >= e) continue; // đã hết ca
+    else if (now >= e) out.push({ ...base, state: "done" }); // đã hết ca: chỉ hiện trên bảng ca
     else {
-      const inOff = (h.slots ?? [])
-        .filter((x) => x.kind === "off" && !x.allDay)
-        .some((x) => {
-          const a = hhmmToMin(x.start ?? null);
-          const b = hhmmToMin(x.end ?? null);
-          return a !== null && b !== null && now >= a && now < b;
-        });
+      const inOff = offs.some((x) => now >= (hhmmToMin(x.start ?? null) ?? 0) && now < (hhmmToMin(x.end ?? null) ?? 0));
       out.push({ ...base, state: inOff ? "break" : "on" });
     }
   }
+  out.sort((a, b) => (a.from ?? "").localeCompare(b.from ?? "") || a.name.localeCompare(b.name, "vi"));
   g.__aiOfficeDuty = { at: Date.now(), data: out };
   return out;
 }
@@ -62,6 +59,9 @@ export async function getDutyDemo(): Promise<DutyStaff[]> {
   const salers = live.filter((s) => s.role === "saler").slice(0, 5);
   const order = live.filter((s) => s.role === "reader" || s.role === "saler").map((s) => s.id).sort();
   const pick = (list: typeof live, role: "reader" | "saler"): DutyStaff[] =>
-    list.map((p, i) => ({ id: p.id, name: p.name, role, idx: order.indexOf(p.id), state: i % 3 === 2 ? "soon" : i % 7 === 6 ? "break" : "on", from: "08:00", to: "17:00" }));
+    list.map((p, i) => {
+      const slot = [["08:00", "12:00"], ["09:00", "17:00"], ["13:00", "21:00"], ["14:00", "22:00"], ["06:00", "10:00"]][i % 5];
+      return { id: p.id, name: p.name, role, idx: order.indexOf(p.id), state: i % 5 === 4 ? "done" : i % 3 === 2 ? "soon" : i % 7 === 6 ? "break" : "on", from: slot[0], to: slot[1], note: i % 4 === 1 ? "nghỉ 12:00–13:00" : undefined } as DutyStaff;
+    });
   return [...pick(readers, "reader"), ...pick(salers, "saler")];
 }

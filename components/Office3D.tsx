@@ -34,7 +34,7 @@ import {
   type StaffRole,
 } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
-import { staffLook, type DutyStaff } from "@/lib/dutyTypes";
+import { staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
 import { Buildings, Hall, LogoSigns, WorkRooms, Zone, type DoorState } from "@/components/Campus";
 import { B } from "@/components/sceneKit";
 
@@ -579,6 +579,10 @@ export default function Office3D({
   onTvClick,
   maint,
   duty,
+  board,
+  sales,
+  cases,
+  onBoardClick,
 }: {
   states: States;
   selected: AgentId | null;
@@ -587,6 +591,13 @@ export default function Office3D({
   onTvClick: (id: DeptId) => void;
   /** Nhân viên Reader/Saler trực hôm nay: đang trực → ngồi bàn (có tên); chưa tới giờ → đi quanh công ty/nghỉ. */
   duty: DutyStaff[];
+  /** Toàn bộ ca hôm nay (kể cả đã hết ca) cho bảng ca trên tường phòng làm việc. */
+  board: DutyStaff[];
+  /** Bán hàng hôm nay của từng Saler (bảng ở phòng làm việc Saler). */
+  sales: SalesToday | null;
+  /** Ca (lịch hẹn do Sale gắn) + số đơn hôm nay của từng Reader (tivi thứ hai ở phòng Reader). */
+  cases: CasesToday | null;
+  onBoardClick: (kind: BoardKind) => void;
   /** Phòng nào đang được cấu hình/chỉnh sửa (đèn cửa đỏ nhấp nháy + bảng Work in Process, AI trong phòng ở lại bàn). */
   maint: Partial<Record<DeptId, boolean>>;
 }) {
@@ -696,7 +707,7 @@ export default function Office3D({
           <LogoSigns />
         </Suspense>
         <Buildings />
-        <WorkRooms occupied={occupied} />
+        <WorkRooms occupied={occupied} board={board} sales={sales} cases={cases} onBoard={onBoardClick} />
         {DEPTS.map((d) => (
           <Zone key={d.id} d={d} active={deptActive(d.id)} door={doorState(d.id)} data={tv ? tv[d.id] : null} states={states} onTv={onTvClick} />
         ))}
