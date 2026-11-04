@@ -40,6 +40,8 @@ import { FX_INFO, type FxEvent, type FxKind } from "@/lib/realtimeClient";
 import { staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
 import { Buildings, Hall, LogoSigns, WorkRooms, Zone, type DoorState } from "@/components/Campus";
 import { B } from "@/components/sceneKit";
+import { costumeStyle } from "@/components/Costume";
+import type { CostumeId } from "@/lib/costumes";
 
 /**
  * Khuôn viên văn phòng: mỗi phòng ban là một khu RIÊNG (vách sau có Tivi, cửa quẹt thẻ + đèn trạng thái),
@@ -59,10 +61,16 @@ const lerpAngle = (a: number, b: number, t: number) => {
 };
 
 // ---------------------------------------------------------------- người
-type Ctl = { mode: "desk" | "walk" | "spot"; pose: Pose | null; sit: boolean; status: AgentStatus };
+export type Ctl = { mode: "desk" | "walk" | "spot"; pose: Pose | null; sit: boolean; status: AgentStatus };
 
 /** Người: thân + đầu + 2 tay + 2 chân. Hoạt ảnh theo chế độ (ngồi bàn / đi / làm việc ở khu nghỉ). */
-function Person({ color, ctl, hair = "#2b2118", skin = SKIN, crown = false }: { color: string; ctl: React.RefObject<Ctl>; hair?: string; skin?: string; crown?: boolean }) {
+export function Person({ color, ctl, hair = "#2b2118", skin = SKIN, crown = false, costume = "default" }: { color: string; ctl: React.RefObject<Ctl>; hair?: string; skin?: string; crown?: boolean; costume?: CostumeId }) {
+  const st = useMemo(() => costumeStyle(costume), [costume]);
+  const sk = st.skin ?? skin;
+  const res = (c?: string) => (c === "skin" ? sk : c);
+  const torsoCol = res(st.torso) ?? color;
+  const armCol = res(st.arm) ?? res(st.torso) ?? color;
+  const legCol = res(st.leg) ?? "#2f3447";
   const body = useRef<THREE.Group>(null);
   const head = useRef<THREE.Group>(null);
   const armL = useRef<THREE.Mesh>(null);
@@ -177,19 +185,21 @@ function Person({ color, ctl, hair = "#2b2118", skin = SKIN, crown = false }: { 
   return (
     <group>
       <group ref={body} position={[0, 0.5, 0]}>
+        {st.body}
         <mesh position={[0, 0.32, 0]} castShadow>
           <cylinderGeometry args={[0.2, 0.24, 0.62, 16]} />
-          <meshStandardMaterial color={color} roughness={0.6} />
+          <meshStandardMaterial color={torsoCol} roughness={0.6} />
         </mesh>
         <group ref={head} position={[0, 0.86, 0]}>
           <mesh castShadow>
             <sphereGeometry args={[0.19, 20, 20]} />
-            <meshStandardMaterial color={skin} roughness={0.8} />
+            <meshStandardMaterial color={sk} roughness={0.8} />
           </mesh>
           <mesh position={[0, 0.07, -0.02]}>
             <sphereGeometry args={[0.2, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
             <meshStandardMaterial color={hair} roughness={0.9} />
           </mesh>
+          {st.head}
           {crown && (
             <group position={[0, 0.25, 0]}>
               <mesh>
@@ -207,18 +217,18 @@ function Person({ color, ctl, hair = "#2b2118", skin = SKIN, crown = false }: { 
         </group>
         <mesh ref={armL} position={[-0.27, 0.5, 0]} castShadow>
           <boxGeometry args={[0.09, 0.4, 0.09]} />
-          <meshStandardMaterial color={color} roughness={0.6} />
+          <meshStandardMaterial color={armCol} roughness={0.6} />
         </mesh>
         <mesh ref={armR} position={[0.27, 0.5, 0]} castShadow>
           <boxGeometry args={[0.09, 0.4, 0.09]} />
-          <meshStandardMaterial color={color} roughness={0.6} />
+          <meshStandardMaterial color={armCol} roughness={0.6} />
         </mesh>
       </group>
       {[-0.1, 0.1].map((x, i) => (
         <group key={x} ref={i === 0 ? legL : legR} position={[x, 0.5, 0]}>
           <mesh position={[0, -0.27, 0]} castShadow>
             <boxGeometry args={[0.11, 0.54, 0.11]} />
-            <meshStandardMaterial color="#2f3447" roughness={0.7} />
+            <meshStandardMaterial color={legCol} roughness={0.7} />
           </mesh>
         </group>
       ))}
@@ -453,6 +463,7 @@ function StaffActor({
   boss,
   onClick,
   fx,
+  costume,
 }: {
   staff: DutyStaff;
   deskIdx: number | null;
@@ -461,6 +472,7 @@ function StaffActor({
   boss: React.RefObject<BossCtl>;
   onClick: (id: string) => void;
   fx: React.RefObject<FxMap>;
+  costume?: CostumeId;
 }) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "walk", pose: null, sit: false, status: "idle" });
@@ -600,7 +612,7 @@ function StaffActor({
         onClick(staff.id);
       }}
     >
-      <Person color={look.shirt} ctl={ctl} hair={look.hair} skin={look.skin} />
+      <Person color={look.shirt} ctl={ctl} hair={look.hair} skin={look.skin} costume={costume} />
       <HitBox />
     </group>
   );
@@ -636,6 +648,7 @@ function BossActor({
   onPos,
   onClick,
   fx,
+  costume,
 }: {
   roam: Roam;
   getPos: () => Record<string, PosInfo>;
@@ -645,6 +658,7 @@ function BossActor({
   onPos: (id: string, info: PosInfo) => void;
   onClick: () => void;
   fx: React.RefObject<FxMap>;
+  costume?: CostumeId;
 }) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "spot", pose: null, sit: false, status: "idle" });
@@ -809,7 +823,7 @@ function BossActor({
         onClick();
       }}
     >
-      <Person color="#6d28d9" ctl={ctl} hair="#1a1a1a" skin="#f1c9a5" crown />
+      <Person color="#6d28d9" ctl={ctl} hair="#1a1a1a" skin="#f1c9a5" crown costume={costume} />
       <HitBox />
     </group>
   );
@@ -916,6 +930,8 @@ export default function Office3D({
   locked,
   fxEvents,
   meIds,
+  costumes,
+  guests,
 }: {
   states: States;
   selected: AgentId | null;
@@ -941,6 +957,10 @@ export default function Office3D({
   fxEvents: FxEvent[];
   /** Mã nhân sự của CHÍNH người đang xem (để gắn nhãn "Bạn"). */
   meIds: string[];
+  /** Trang phục từng nhân vật (khoá = mã nhân sự, "boss" = Meo, "guest:…" = người dùng không có nhân sự). */
+  costumes: Record<string, CostumeId>;
+  /** Người đang trực tuyến nhưng chưa có nhân vật (vd admin) → có nhân vật khách để tự mặc đồ. */
+  guests: DutyStaff[];
   /** Phòng nào đang được cấu hình/chỉnh sửa (đèn cửa đỏ nhấp nháy + bảng Work in Process, AI trong phòng ở lại bàn). */
   maint: Partial<Record<DeptId, boolean>>;
 }) {
@@ -979,7 +999,10 @@ export default function Office3D({
   );
 
   // --- nhân viên thật: bàn được chia, vị trí để vẽ nhãn tên. Meo (bang chủ) có nhân vật riêng nên không vẽ thêm Reader/Saler tên Meo.
-  const crew = useMemo(() => duty.filter((s) => s.name.normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase() !== "meo"), [duty]);
+  const crew = useMemo(
+    () => [...duty.filter((s) => s.name.normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase() !== "meo"), ...guests],
+    [duty, guests]
+  );
   const assign = useMemo(() => assignDesks(crew), [crew]);
   const occupied = useMemo(() => {
     const o: Record<StaffRole, boolean[]> = { reader: WORKROOMS[0].desks.map(() => false), saler: WORKROOMS[1].desks.map(() => false) };
@@ -1093,7 +1116,7 @@ export default function Office3D({
           <Parcel key={`${a.id}-${states[a.id].startedAt}`} meta={a} startedAt={states[a.id].startedAt!} />
         ))}
         {crew.map((s) => (
-          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} fx={fxMap} />
+          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} fx={fxMap} costume={costumes[s.id]} />
         ))}
         <BossActor
           roam={roam}
@@ -1104,6 +1127,7 @@ export default function Office3D({
           onPos={onPos}
           onClick={() => onBossClick(bossActivity.current)}
           fx={fxMap}
+          costume={costumes["boss"]}
         />
         <StaffProjector get={getPos} onProject={onProject} />
         <OrbitControls makeDefault enableDamping minZoom={8} maxZoom={90} maxPolarAngle={Math.PI / 2.2} target={[2, 0.8, 4]} />

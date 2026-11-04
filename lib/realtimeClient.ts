@@ -240,3 +240,50 @@ export class MeetingCall {
     this.set({ joined: false, joining: false, local: null, peers: [], members: [], note: null, error: null });
   }
 }
+
+// ------------------------------------------------------------------ ai đang trực tuyến + trang phục (Presence)
+import type { CostumeId } from "@/lib/costumes";
+import { asCostume } from "@/lib/costumes";
+
+export type OfficeMember = { uid: string; name: string; staffIds: string[]; costume: CostumeId; boss: boolean };
+
+/** Báo "tôi đang trực tuyến + mặc đồ gì" cho mọi người; nhận danh sách người đang trực tuyến. Trang phục của mỗi người hiện ở nhân vật của họ trên máy của tất cả. */
+export function openPresence(
+  cfg: RtConfig,
+  me: OfficeMember & { key: string },
+  onSync: (members: OfficeMember[]) => void
+): { setCostume: (c: CostumeId) => void; close: () => void } {
+  const sb = clientFor(cfg);
+  const ch = sb.channel(`office:${cfg.ns}`, { config: { presence: { key: me.key } } });
+  let current = me.costume;
+  const payload = () => ({ uid: me.uid, name: me.name, staffIds: me.staffIds, costume: current, boss: me.boss });
+  ch.on("presence", { event: "sync" }, () => {
+    const state = ch.presenceState() as Record<string, Partial<OfficeMember>[]>;
+    const byUid = new Map<string, OfficeMember>();
+    for (const list of Object.values(state)) {
+      const m = list[list.length - 1];
+      if (!m?.uid || typeof m.name !== "string") continue;
+      byUid.set(m.uid, {
+        uid: m.uid,
+        name: m.name.slice(0, 40),
+        staffIds: Array.isArray(m.staffIds) ? m.staffIds.filter((x) => typeof x === "string") : [],
+        costume: asCostume(m.costume),
+        boss: !!m.boss,
+      });
+    }
+    onSync([...byUid.values()]);
+  });
+  ch.subscribe(async (status) => {
+    if (status === "SUBSCRIBED") await ch.track(payload());
+  });
+  return {
+    setCostume: (c) => {
+      current = c;
+      void ch.track(payload());
+    },
+    close: () => {
+      void sb.removeChannel(ch);
+    },
+  };
+}
+

@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
-import { FX_INFO, openFxChannel, type FxEvent, type FxKind, type RtConfig } from "@/lib/realtimeClient";
+import { FX_INFO, openFxChannel, openPresence, type FxEvent, type FxKind, type OfficeMember, type RtConfig } from "@/lib/realtimeClient";
+import { COSTUMES, asCostume, type CostumeId } from "@/lib/costumes";
 import type { TvData } from "@/lib/tv";
 import type { PersonCard } from "@/lib/lookup";
 import { formatDong, staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
@@ -123,9 +124,13 @@ export default function Home() {
   const [bossInfo, setBossInfo] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [rt, setRt] = useState<RtConfig | null>(null);
-  const [denied, setDenied] = useState<{ id?: string; name?: string; what: string } | null>(null);
+  const [denied, setDenied] = useState<{ id?: string; name?: string; what: string; neutral?: boolean } | null>(null);
   const [fxEvents, setFxEvents] = useState<FxEvent[]>([]);
   const [meetOpen, setMeetOpen] = useState(false);
+  const [myCostume, setMyCostume] = useState<CostumeId>("default");
+  const [members, setMembers] = useState<OfficeMember[]>([]);
+  const [costumeOpen, setCostumeOpen] = useState(false);
+  const presence = useRef<{ setCostume: (c: CostumeId) => void; close: () => void } | null>(null);
   const fxSend = useRef<((kind: FxKind, fromName: string, toId: string, toName: string) => void) | null>(null);
   const admin = !!me?.admin;
   const router = useRouter();
@@ -144,7 +149,14 @@ export default function Home() {
     fetch("/api/me", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { user?: Me; realtime?: RtConfig | null } | null) => {
-        if (d?.user) setMe(d.user);
+        if (d?.user) {
+          setMe(d.user);
+          try {
+            setMyCostume(asCostume(localStorage.getItem(`office-costume:${d.user.uid}`)));
+          } catch {
+            /* trình duyệt chặn lưu trữ → dùng mặc định */
+          }
+        }
         if (d?.realtime) setRt(d.realtime);
       })
       .catch(() => undefined);
@@ -161,6 +173,33 @@ export default function Home() {
     };
   }, [rt]);
 
+  // Báo "đang trực tuyến + mặc đồ gì" cho mọi người (Presence).
+  useEffect(() => {
+    if (!rt || !me) return;
+    const key = `${me.uid}-${Math.random().toString(36).slice(2, 7)}`;
+    const h = openPresence(rt, { key, uid: me.uid, name: me.name, staffIds: me.staffIds, costume: "default", boss: me.name === "Meo" }, setMembers);
+    presence.current = h;
+    return () => {
+      presence.current = null;
+      h.close();
+    };
+  }, [rt, me]);
+  useEffect(() => {
+    presence.current?.setCostume(myCostume);
+  }, [myCostume, rt, me]);
+
+  const pickCostume = useCallback(
+    (c: CostumeId) => {
+      setMyCostume(c);
+      try {
+        if (me) localStorage.setItem(`office-costume:${me.uid}`, c);
+      } catch {
+        /* không lưu được thì thôi */
+      }
+    },
+    [me]
+  );
+
   const sendFx = useCallback(
     (kind: FxKind, toId: string, toName: string) => {
       if (!fxSend.current) {
@@ -176,6 +215,11 @@ export default function Home() {
   const openPerson = useCallback(
     (id: string) => {
       closeCards();
+      if (id.startsWith("guest:")) {
+        if (me && id === `guest:${me.uid}`) setCostumeOpen(true);
+        else setDenied({ id, name: members.find((m) => `guest:${m.uid}` === id)?.name, what: "người dùng này", neutral: true });
+        return;
+      }
       if (!admin && !(me?.staffIds ?? []).includes(id)) {
         setDenied({ id, name: dutyAll.find((s) => s.id === id)?.name, what: "người khác" });
         return;
@@ -189,7 +233,7 @@ export default function Home() {
         })
         .catch((e: Error) => setPerson({ loading: false, error: e.message }));
     },
-    [closeCards, admin, me, dutyAll]
+    [closeCards, admin, me, dutyAll, members]
   );
   const [sales, setSales] = useState<SalesToday | null>(null);
   const [cases, setCases] = useState<CasesToday | null>(null);
@@ -336,6 +380,39 @@ export default function Home() {
   const sel = selected ? states[selected] : null;
   const selMeta = selected ? AGENT_BY_ID[selected] : null;
 
+  // Trang phục từng nhân vật + nhân vật khách (người trực tuyến chưa có nhân vật, vd admin).
+  const everyone = useMemo(() => {
+    const map = new Map<string, OfficeMember>(members.map((m) => [m.uid, m]));
+    if (me) map.set(me.uid, { uid: me.uid, name: me.name, staffIds: me.staffIds, costume: myCostume, boss: me.name === "Meo" }); // đồ của mình hiện ngay
+    return [...map.values()];
+  }, [members, me, myCostume]);
+  const shownIds = useMemo(() => new Set(duty.map((s) => s.id)), [duty]);
+  const costumes = useMemo(() => {
+    const out: Record<string, CostumeId> = {};
+    for (const m of everyone) {
+      if (m.costume === "default") continue;
+      for (const id of m.staffIds) out[id] = m.costume;
+      if (m.boss) out["boss"] = m.costume;
+      out[`guest:${m.uid}`] = m.costume;
+    }
+    // Xem thử: thêm ?costumes=all vào địa chỉ → mọi nhân vật mặc lần lượt từng bộ đồ.
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("costumes") === "all") {
+      duty.forEach((s, i) => {
+        out[s.id] = COSTUMES[(i % (COSTUMES.length - 1)) + 1].id;
+      });
+      out["boss"] = "hero";
+    }
+    return out;
+  }, [everyone, duty]);
+  const guests = useMemo<DutyStaff[]>(
+    () =>
+      everyone
+        .filter((m) => !m.boss && !m.staffIds.some((id) => shownIds.has(id)))
+        .map((m) => ({ id: `guest:${m.uid}`, name: m.name, role: "reader" as const, state: "soon" as const, idx: [...m.uid].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 40, guest: true })),
+    [everyone, shownIds]
+  );
+  const meGuestIds = me ? [`guest:${me.uid}`] : [];
+
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[#eef3ff] text-slate-800">
       <div className="absolute inset-0">
@@ -366,7 +443,9 @@ export default function Home() {
           }}
           locked={!admin}
           fxEvents={fxEvents}
-          meIds={me?.staffIds ?? []}
+          meIds={[...(me?.staffIds ?? []), ...meGuestIds]}
+          costumes={costumes}
+          guests={guests}
         />
       </div>
 
@@ -377,7 +456,7 @@ export default function Home() {
           <img src="/logo-tho-dark.png" alt="Thỏ" className="h-11 w-auto" />
           <div>
           <div className="text-base font-extrabold tracking-wide text-slate-900">Văn phòng AI · Thor</div>
-          <div className="text-[11px] text-slate-500">7 phòng ban · mỗi AI lo đúng một nhánh việc · bấm Tivi trong phòng để xem số liệu</div>
+          {admin && <div className="text-[11px] text-slate-500">7 phòng ban · mỗi AI lo đúng một nhánh việc · bấm Tivi trong phòng để xem số liệu</div>}
           </div>
         </div>
         {me && (
@@ -394,6 +473,9 @@ export default function Home() {
                 📞 Phòng họp (gọi video)
               </button>
             )}
+            <button onClick={() => setCostumeOpen((v) => !v)} className="rounded-full border border-fuchsia-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-fuchsia-700 shadow-sm hover:bg-fuchsia-50">
+              👗 Trang phục
+            </button>
             {me.uid !== "local" && (
               <button
                 onClick={() => void fetch("/api/logout", { method: "POST" }).then(() => router.replace("/login"))}
@@ -404,7 +486,7 @@ export default function Home() {
             )}
           </div>
         )}
-        {status && (
+        {status && admin && (
           <div className="flex flex-wrap gap-2">
             <span className={`rounded-full border bg-white/85 px-3 py-1 text-[11px] font-semibold shadow-sm ${RUNNER_LABEL[status.runner].cls}`}>
               {RUNNER_LABEL[status.runner].text}
@@ -421,7 +503,7 @@ export default function Home() {
       </div>
 
       {/* Ghi chú bên trái: màu theo phòng ban + nhiệm vụ (không liệt kê từng AI cho đỡ rối) */}
-      <div className="absolute left-4 top-[132px] z-10 w-[min(268px,calc(100vw-2rem))]">
+      {admin && <div className="absolute left-4 top-[132px] z-10 w-[min(268px,calc(100vw-2rem))]">
         <button
           onClick={() => setLegendOpen((v) => !v)}
           className="mb-1 rounded-lg border border-slate-200 bg-white/85 px-3 py-1 text-xs font-semibold text-slate-600 backdrop-blur hover:bg-white"
@@ -480,7 +562,7 @@ export default function Home() {
             </div>
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Bảng tin tương tác: ai vừa chọc/đấm/gửi icon cho ai */}
       {fxEvents.length > 0 && (
@@ -490,6 +572,35 @@ export default function Home() {
               {FX_INFO[e.kind].emoji} {e.fromName} {FX_INFO[e.kind].verb} {e.toName}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Chọn trang phục cho nhân vật của mình */}
+      {costumeOpen && (
+        <div className="absolute bottom-28 left-4 z-30 w-[min(340px,calc(100vw-2rem))] rounded-2xl border border-fuchsia-300 bg-white/95 p-3 shadow-2xl backdrop-blur">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-sm font-extrabold text-fuchsia-800">👗 Trang phục của {me?.name ?? "bạn"}</div>
+            <button onClick={() => setCostumeOpen(false)} className="rounded px-2 text-lg leading-none text-slate-500 hover:bg-slate-100" aria-label="Đóng">
+              ×
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {COSTUMES.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => pickCostume(c.id)}
+                className={`rounded-xl border px-1.5 py-2 text-center text-[11px] font-semibold leading-tight ${
+                  myCostume === c.id ? "border-fuchsia-500 bg-fuchsia-50 text-fuchsia-800 ring-2 ring-fuchsia-300" : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <div className="text-xl">{c.emoji}</div>
+                {c.name}
+              </button>
+            ))}
+          </div>
+          <div className="mt-2 text-[10.5px] leading-snug text-slate-500">
+            Nhân vật của bạn (nhãn “Bạn”) đổi đồ ngay; mọi người đang mở văn phòng cũng thấy. Trang phục được nhớ trên máy này.
+          </div>
         </div>
       )}
 
@@ -572,9 +683,15 @@ export default function Home() {
               ×
             </button>
           </div>
+          {denied.neutral ? (
+            <div className="text-[13px] leading-snug text-slate-200">
+              <b>{denied.name}</b> đang trực tuyến trong văn phòng. Bạn có thể tương tác bên dưới.
+            </div>
+          ) : (
           <div className="text-[13px] leading-snug text-red-100">
             Anh/chị không có quyền xem <b>{denied.name ? `thông tin của ${denied.name}` : denied.what}</b>. Tài khoản này chỉ xem được thông tin chính của <b>chính mình</b>.
           </div>
+          )}
           {denied.id && <FxBar target={{ id: denied.id, name: denied.name ?? "bạn này" }} onSend={sendFx} />}
         </div>
       )}

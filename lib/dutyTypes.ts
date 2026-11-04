@@ -9,6 +9,8 @@ export type DutyStaff = {
   state: DutyState;
   from?: string;
   to?: string;
+  /** Nhân vật khách: người đang trực tuyến chưa có nhân vật (vd admin). */
+  guest?: boolean;
   /** Giờ nghỉ giữa ca (nếu có), vd "nghỉ 12:00–13:00". */
   note?: string;
   /** Số thứ tự cố định trong toàn bộ danh sách Reader+Saler đang làm → mỗi người một màu riêng. */
