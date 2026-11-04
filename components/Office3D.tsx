@@ -22,6 +22,8 @@ import {
   WORKROOM_BY_ID,
   buildRoute,
   nodePos,
+  MEO_SEAT,
+  deskChair,
   pickLounge,
   pointAt,
   routeBetween,
@@ -59,7 +61,7 @@ const lerpAngle = (a: number, b: number, t: number) => {
 type Ctl = { mode: "desk" | "walk" | "spot"; pose: Pose | null; sit: boolean; status: AgentStatus };
 
 /** Người: thân + đầu + 2 tay + 2 chân. Hoạt ảnh theo chế độ (ngồi bàn / đi / làm việc ở khu nghỉ). */
-function Person({ color, ctl, hair = "#2b2118", skin = SKIN }: { color: string; ctl: React.RefObject<Ctl>; hair?: string; skin?: string }) {
+function Person({ color, ctl, hair = "#2b2118", skin = SKIN, crown = false }: { color: string; ctl: React.RefObject<Ctl>; hair?: string; skin?: string; crown?: boolean }) {
   const body = useRef<THREE.Group>(null);
   const head = useRef<THREE.Group>(null);
   const armL = useRef<THREE.Mesh>(null);
@@ -142,6 +144,12 @@ function Person({ color, ctl, hair = "#2b2118", skin = SKIN }: { color: string; 
     } else if (c.pose === "eat") {
       aR = -1.0 + Math.sin(t * 3.2) * 0.45;
       aL = -0.9 + Math.sin(t * 3.2 + 1.4) * 0.3;
+    } else if (c.pose === "talk") {
+      // đứng trao đổi: tay ra hiệu, đầu gật/quay nhẹ
+      headY = Math.sin(t * 0.7) * 0.35;
+      tilt = Math.sin(t * 1.3) * 0.05;
+      aR = Math.sin(t * 0.9) > 0.1 ? -1.3 + Math.sin(t * 5) * 0.35 : -0.3;
+      aL = Math.sin(t * 0.6 + 2) > 0.5 ? -1.0 + Math.sin(t * 4) * 0.3 : -0.2;
     } else if (c.pose === "meet") {
       headY = Math.sin(t * 0.5) * 0.6;
       aR = Math.sin(t * 0.8) > 0.55 ? -1.5 + Math.sin(t * 6) * 0.3 : -0.8;
@@ -181,6 +189,20 @@ function Person({ color, ctl, hair = "#2b2118", skin = SKIN }: { color: string; 
             <sphereGeometry args={[0.2, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
             <meshStandardMaterial color={hair} roughness={0.9} />
           </mesh>
+          {crown && (
+            <group position={[0, 0.25, 0]}>
+              <mesh>
+                <cylinderGeometry args={[0.16, 0.19, 0.12, 12]} />
+                <meshStandardMaterial color="#fbbf24" metalness={0.8} roughness={0.25} emissive="#f59e0b" emissiveIntensity={0.5} />
+              </mesh>
+              {[0, 1, 2, 3, 4].map((i) => (
+                <mesh key={i} position={[Math.cos((i / 5) * TWO_PI) * 0.15, 0.1, Math.sin((i / 5) * TWO_PI) * 0.15]}>
+                  <coneGeometry args={[0.04, 0.12, 6]} />
+                  <meshStandardMaterial color="#fde047" metalness={0.8} roughness={0.25} emissive="#f59e0b" emissiveIntensity={0.6} />
+                </mesh>
+              ))}
+            </group>
+          )}
         </group>
         <mesh ref={armL} position={[-0.27, 0.5, 0]} castShadow>
           <boxGeometry args={[0.09, 0.4, 0.09]} />
@@ -204,7 +226,15 @@ function Person({ color, ctl, hair = "#2b2118", skin = SKIN }: { color: string; 
 }
 
 // ---------------------------------------------------------------- AI tự đi lại
-type Roam = { claim: (l: LoungeId) => number; release: (l: LoungeId, i: number) => void; hour: () => number; fast: boolean };
+type Roam = {
+  claim: (l: LoungeId) => number;
+  release: (l: LoungeId, i: number) => void;
+  hour: () => number;
+  fast: boolean;
+  /** Nhân viên chọn nơi đến: bình thường theo giờ; khi bang chủ đang họp/ăn thì hay kéo tới đúng phòng đó. */
+  pickFor: (now: number) => LoungeId;
+  setBias: (id: LoungeId, until: number) => void;
+};
 type Phase = "seated" | "out" | "stay" | "back";
 type Sim = { phase: Phase; s: number; route: Route | null; lounge: LoungeId | null; idx: number; spot: Spot | null; nextAt: number; leaveAt: number; heading: number };
 
@@ -350,6 +380,10 @@ function assignDesks(duty: DutyStaff[]): Map<string, number> {
   return res;
 }
 
+/** Bang chủ gọi nhân viên lại trao đổi: ai được gọi (mã nhân viên → chỗ đứng quanh điểm họp), tới giờ nào thì thôi. */
+type BossCtl = { key: number; until: number; px: number; pz: number; spots: Record<string, { x: number; z: number }> };
+type PosInfo = { x: number; z: number; desk: boolean; moving: boolean; name: string };
+
 type StaffSim = {
   init: boolean;
   node: PlaceNode;
@@ -360,16 +394,43 @@ type StaffSim = {
   dwellUntil: number;
   heading: number;
   held: { id: LoungeId; idx: number } | null;
+  attendKey: number;
+  attending: boolean;
 };
+
+/** Vùng bấm vô hình quanh người (to hơn thân người cho dễ chạm). */
+function HitBox() {
+  return (
+    <mesh position={[0, 0.95, 0]}>
+      <cylinderGeometry args={[0.45, 0.45, 1.9, 8]} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+    </mesh>
+  );
+}
 
 /**
  * Một nhân viên thật. Đang trong giờ trực → ngồi gõ máy ở bàn trong phòng làm việc của vai trò mình;
  * chưa tới giờ trực (hoặc đang nghỉ giữa ca) → đi dạo quanh công ty hoặc ngồi nghỉ ở quán/gym/phòng nghỉ/phòng họp.
+ * Bang chủ Meo gọi tới trao đổi thì ra đứng quanh Meo cho tới khi xong. Chạm vào để xem thông tin.
  */
-function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx: number | null; roam: Roam; onPos: (id: string, x: number, z: number) => void }) {
+function StaffActor({
+  staff,
+  deskIdx,
+  roam,
+  onPos,
+  boss,
+  onClick,
+}: {
+  staff: DutyStaff;
+  deskIdx: number | null;
+  roam: Roam;
+  onPos: (id: string, info: PosInfo) => void;
+  boss: React.RefObject<BossCtl>;
+  onClick: (id: string) => void;
+}) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "walk", pose: null, sit: false, status: "idle" });
-  const sim = useRef<StaffSim>({ init: false, node: { kind: "out", x: 0, z: 0 }, target: null, route: null, s: 0, phase: "idle", dwellUntil: 0, heading: 0, held: null });
+  const sim = useRef<StaffSim>({ init: false, node: { kind: "out", x: 0, z: 0 }, target: null, route: null, s: 0, phase: "idle", dwellUntil: 0, heading: 0, held: null, attendKey: -1, attending: false });
   const look = staffLook(staff.idx);
 
   useEffect(() => {
@@ -384,6 +445,7 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
     if (!grp) return;
     const S = sim.current;
     const C = ctl.current;
+    const bc = boss.current;
     const now = clock.elapsedTime;
     const dt = Math.min(dtRaw, 0.1);
     const k = roam.fast ? 3 : 1;
@@ -413,14 +475,23 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
 
     if (S.phase === "idle") {
       const atDesk = S.node.kind === "desk" && deskIdx !== null && S.node.idx === deskIdx;
-      if (wantDesk && deskNode && !atDesk) {
+      const sp = bc?.spots[staff.id];
+      if (sp && bc.until > now && S.attendKey !== bc.key && !wantDesk) {
+        // bang chủ gọi lại trao đổi
         releaseHeld();
+        S.attendKey = bc.key;
+        S.attending = true;
+        startMove({ kind: "out", x: sp.x, z: sp.z });
+      } else if (wantDesk && deskNode && !atDesk) {
+        releaseHeld();
+        S.attending = false;
         startMove(deskNode);
       } else if (!wantDesk && (S.node.kind === "desk" || now >= S.dwellUntil)) {
         releaseHeld();
+        S.attending = false;
         let to: PlaceNode | null = null;
         if (Math.random() < 0.55) {
-          const id = pickLounge(roam.hour(), Math.random);
+          const id = roam.pickFor(now);
           const i = roam.claim(id);
           if (i >= 0) {
             S.held = { id, idx: i };
@@ -439,9 +510,14 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
         S.node = S.target;
         S.phase = "idle";
         S.route = null;
-        S.dwellUntil = S.node.kind === "lounge" ? now + rand(25, 50) / k : S.node.kind === "out" ? now + rand(3, 8) / k : Infinity;
+        if (S.attending && bc && bc.key === S.attendKey && bc.until > now) S.dwellUntil = bc.until + 0.5;
+        else {
+          S.attending = false;
+          S.dwellUntil = S.node.kind === "lounge" ? now + rand(25, 50) / k : S.node.kind === "out" ? now + rand(3, 8) / k : Infinity;
+        }
       }
     }
+    if (S.attending && (!bc || bc.key !== S.attendKey || bc.until <= now) && S.phase === "idle") S.attending = false;
 
     let x: number;
     let z: number;
@@ -455,11 +531,12 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
       [x, z] = nodePos(S.node);
       if (S.node.kind === "lounge") target = S.node.spot.face;
       else if (S.node.kind === "desk") target = Math.PI;
+      else if (S.attending && bc) target = Math.atan2(bc.px - x, bc.pz - z);
     }
     S.heading = lerpAngle(S.heading, target, Math.min(1, dt * 8));
     grp.position.set(x, 0, z);
     grp.rotation.y = S.heading;
-    onPos(staff.id, x, z);
+    onPos(staff.id, { x, z, desk: S.node.kind === "desk" && S.phase === "idle", moving: S.phase === "moving", name: staff.name });
 
     if (S.phase === "moving") {
       C.mode = "walk";
@@ -476,13 +553,226 @@ function StaffActor({ staff, deskIdx, roam, onPos }: { staff: DutyStaff; deskIdx
     } else {
       C.mode = "spot";
       C.sit = false;
-      C.pose = null;
+      C.pose = S.attending ? "talk" : null;
     }
   });
 
   return (
-    <group ref={g}>
+    <group
+      ref={g}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(staff.id);
+      }}
+    >
       <Person color={look.shirt} ctl={ctl} hair={look.hair} skin={look.skin} />
+      <HitBox />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------- Meo — bang chủ (Admin)
+type BossSim = {
+  init: boolean;
+  node: PlaceNode;
+  target: PlaceNode | null;
+  route: Route | null;
+  s: number;
+  phase: "idle" | "moving" | "stay";
+  nextAt: number;
+  stayUntil: number;
+  stayFor: number;
+  heading: number;
+  held: { id: LoungeId; idx: number } | null;
+  kind: "chat" | "visit" | "meeting" | "eat" | "walk" | null;
+  faceTo: { x: number; z: number } | null;
+};
+
+/**
+ * Meo bang chủ: thường xuyên gặp trao đổi 1-1 / 1-2 / 1-3 nhân viên (gọi họ ra đứng quanh mình, hoặc ghé tận bàn người đang trực),
+ * ngồi ghế đầu bàn chỉ đạo họp trong phòng họp, và ăn uống cùng mọi người (lúc đó nhân viên cũng hay kéo tới đúng phòng đó).
+ */
+function BossActor({
+  roam,
+  getPos,
+  deskOf,
+  onSummon,
+  onActivity,
+  onPos,
+  onClick,
+}: {
+  roam: Roam;
+  getPos: () => Record<string, PosInfo>;
+  deskOf: (id: string) => { room: StaffRole; idx: number } | null;
+  onSummon: (spots: BossCtl["spots"], until: number, px: number, pz: number) => void;
+  onActivity: (text: string) => void;
+  onPos: (id: string, info: PosInfo) => void;
+  onClick: () => void;
+}) {
+  const g = useRef<THREE.Group>(null);
+  const ctl = useRef<Ctl>({ mode: "spot", pose: null, sit: false, status: "idle" });
+  const sim = useRef<BossSim>({ init: false, node: { kind: "out", x: 0, z: 5.8 }, target: null, route: null, s: 0, phase: "idle", nextAt: -1, stayUntil: 0, stayFor: 0, heading: Math.PI, held: null, kind: null, faceTo: null });
+
+  useEffect(() => {
+    const S = sim.current;
+    return () => {
+      if (S.held) roam.release(S.held.id, S.held.idx);
+    };
+  }, [roam]);
+
+  useFrame(({ clock }, dtRaw) => {
+    const grp = g.current;
+    if (!grp) return;
+    const S = sim.current;
+    const C = ctl.current;
+    const now = clock.elapsedTime;
+    const dt = Math.min(dtRaw, 0.1);
+    const k = roam.fast ? 3 : 1;
+    if (!S.init) {
+      S.init = true;
+      S.nextAt = now + rand(2, 6) / k;
+    }
+
+    const go = (to: PlaceNode, kind: NonNullable<BossSim["kind"]>, stay: number, faceTo: BossSim["faceTo"]) => {
+      S.route = routeBetween(S.node, to);
+      S.target = to;
+      S.s = 0;
+      S.phase = "moving";
+      S.kind = kind;
+      S.stayFor = stay;
+      S.faceTo = faceTo;
+      return S.route.total / (1.7 * k);
+    };
+
+    if (S.phase === "idle" && now >= S.nextAt) {
+      const hour = roam.hour();
+      const pos = getPos();
+      const ids = Object.keys(pos).filter((i) => i !== "boss");
+      const roamers = ids.filter((i) => !pos[i].desk);
+      const deskers = ids.filter((i) => pos[i].desk && deskOf(i));
+      const meetingTime = (hour >= 9 && hour < 10.5) || (hour >= 14 && hour < 15.5);
+      const w = {
+        chat: ids.length ? 5 : 0,
+        meeting: meetingTime ? 4 : 1.3,
+        eat: hour >= 11 && hour < 14 ? 4 : hour < 9 ? 3 : 1,
+        walk: 1.5,
+      };
+      let r = Math.random() * (w.chat + w.meeting + w.eat + w.walk);
+      const pick = (r -= w.chat) < 0 ? "chat" : (r -= w.meeting) < 0 ? "meeting" : (r -= w.eat) < 0 ? "eat" : "walk";
+      let done = false;
+
+      if (pick === "chat") {
+        const stay = rand(14, 26) / k;
+        if (deskers.length && (roamers.length === 0 || Math.random() < 0.4)) {
+          // ghé tận bàn một người đang trực
+          const id = deskers[Math.floor(Math.random() * deskers.length)];
+          const d = deskOf(id)!;
+          const room = WORKROOM_BY_ID[d.room];
+          const ch = deskChair(room, d.idx);
+          go({ kind: "visit", room: d.room, idx: d.idx }, "visit", stay, { x: ch[0], z: ch[1] });
+          onActivity(`Trao đổi 1-1 với ${pos[id].name} tại bàn làm việc`);
+          done = true;
+        } else if (roamers.length) {
+          // gọi 1, 2 hoặc 3 người ra đứng quanh mình
+          const n = Math.min(roamers.length, Math.random() < 0.45 ? 1 : Math.random() < 0.65 ? 2 : 3);
+          const picked = [...roamers].sort(() => Math.random() - 0.5).slice(0, n);
+          const [px, pz] = WANDER_POINTS[Math.floor(Math.random() * WANDER_POINTS.length)];
+          const base = Math.random() * TWO_PI;
+          const spots: BossCtl["spots"] = {};
+          picked.forEach((id, i) => {
+            const a = base + ((i + 1) / (n + 1)) * Math.PI * 1.2 - Math.PI * 0.6;
+            spots[id] = { x: px + Math.cos(a) * 1.25, z: pz + Math.sin(a) * 1.25 };
+          });
+          const travel = go({ kind: "out", x: px, z: pz }, "chat", stay, { x: px + Math.cos(base) * 1.25, z: pz + Math.sin(base) * 1.25 });
+          onSummon(spots, now + travel + stay + 12 / k, px, pz);
+          onActivity(`Trao đổi với ${picked.map((id) => pos[id].name).join(", ")}`);
+          done = true;
+        }
+      } else if (pick === "meeting") {
+        const stay = rand(60, 90) / k;
+        const travel = go({ kind: "lounge", id: "meeting", spot: MEO_SEAT }, "meeting", stay, null);
+        roam.setBias("meeting", now + travel + stay);
+        onActivity("Ngồi chỉ đạo họp trong phòng họp");
+        done = true;
+      } else if (pick === "eat") {
+        const id: LoungeId = hour >= 11 && hour < 14 ? "dining" : hour < 10 ? (Math.random() < 0.5 ? "dining" : "tea") : "tea";
+        const i = roam.claim(id);
+        if (i >= 0) {
+          S.held = { id, idx: i };
+          const stay = rand(40, 60) / k;
+          const travel = go({ kind: "lounge", id, spot: LOUNGE_BY_ID[id].spots[i] }, "eat", stay, null);
+          roam.setBias(id, now + travel + stay);
+          onActivity(id === "dining" ? (hour < 10 ? "Ăn sáng cùng mọi người" : "Ăn trưa cùng mọi người") : "Uống cà phê, trò chuyện cùng mọi người");
+          done = true;
+        }
+      }
+      if (!done) {
+        const [x, z] = WANDER_POINTS[Math.floor(Math.random() * WANDER_POINTS.length)];
+        go({ kind: "out", x, z }, "walk", rand(3, 6) / k, null);
+        onActivity("Đi kiểm tra các phòng");
+      }
+    } else if (S.phase === "moving" && S.route && S.target) {
+      S.s += 1.7 * k * dt;
+      if (S.s >= S.route.total) {
+        S.node = S.target;
+        S.phase = "stay";
+        S.route = null;
+        S.stayUntil = now + S.stayFor;
+      }
+    } else if (S.phase === "stay" && now >= S.stayUntil) {
+      if (S.held) roam.release(S.held.id, S.held.idx);
+      S.held = null;
+      S.phase = "idle";
+      S.kind = null;
+      S.nextAt = now + rand(4, 10) / k;
+      onActivity("");
+    }
+
+    let x: number;
+    let z: number;
+    let target = S.heading;
+    if (S.phase === "moving" && S.route) {
+      const p = pointAt(S.route, S.s);
+      x = p.x;
+      z = p.z;
+      if (Math.abs(p.dx) + Math.abs(p.dz) > 1e-6) target = Math.atan2(p.dx, p.dz);
+    } else {
+      [x, z] = nodePos(S.node);
+      if (S.node.kind === "lounge") target = S.node.spot.face;
+      else if (S.faceTo) target = Math.atan2(S.faceTo.x - x, S.faceTo.z - z);
+    }
+    S.heading = lerpAngle(S.heading, target, Math.min(1, dt * 8));
+    grp.position.set(x, 0, z);
+    grp.rotation.y = S.heading;
+    onPos("boss", { x, z, desk: false, moving: S.phase === "moving", name: "Meo" });
+
+    if (S.phase === "moving") {
+      C.mode = "walk";
+      C.sit = false;
+      C.pose = null;
+    } else if (S.node.kind === "lounge") {
+      C.mode = "spot";
+      C.sit = S.node.spot.sit;
+      C.pose = S.node.spot.pose;
+    } else {
+      C.mode = "spot";
+      C.sit = false;
+      C.pose = S.kind === "chat" || S.kind === "visit" ? "talk" : null;
+    }
+  });
+
+  return (
+    <group
+      ref={g}
+      position={[0, 0, 5.8]}
+      scale={1.08}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      <Person color="#6d28d9" ctl={ctl} hair="#1a1a1a" skin="#f1c9a5" crown />
+      <HitBox />
     </group>
   );
 }
@@ -583,6 +873,8 @@ export default function Office3D({
   sales,
   cases,
   onBoardClick,
+  onStaffClick,
+  onBossClick,
 }: {
   states: States;
   selected: AgentId | null;
@@ -598,6 +890,10 @@ export default function Office3D({
   /** Ca (lịch hẹn do Sale gắn) + số đơn hôm nay của từng Reader (tivi thứ hai ở phòng Reader). */
   cases: CasesToday | null;
   onBoardClick: (kind: BoardKind) => void;
+  /** Chạm vào một nhân viên → xem giờ trực, số ca hôm nay, lương, ca chưa xử lý. */
+  onStaffClick: (id: string) => void;
+  /** Chạm vào Meo bang chủ → xem Meo đang làm gì. */
+  onBossClick: (activity: string) => void;
   /** Phòng nào đang được cấu hình/chỉnh sửa (đèn cửa đỏ nhấp nháy + bảng Work in Process, AI trong phòng ở lại bàn). */
   maint: Partial<Record<DeptId, boolean>>;
 }) {
@@ -611,8 +907,13 @@ export default function Office3D({
     return { hour: h === null || h === "" ? null : Number(h), fast: q.get("fast") === "1", zoom };
   });
 
+  const bias = useRef<{ id: LoungeId; until: number } | null>(null);
   const roam = useMemo<Roam>(
     () => ({
+      pickFor: (now) => (bias.current && now < bias.current.until && Math.random() < 0.6 ? bias.current.id : pickLounge(vnHour(opts.hour), Math.random)),
+      setBias: (id, until) => {
+        bias.current = { id, until };
+      },
       claim: (l) => {
         const occ = occupancy.current[l];
         const free = occ.map((used, i) => (used ? -1 : i)).filter((i) => i >= 0);
@@ -630,23 +931,41 @@ export default function Office3D({
     [opts]
   );
 
-  // --- nhân viên thật: bàn được chia, vị trí để vẽ nhãn tên
-  const assign = useMemo(() => assignDesks(duty), [duty]);
+  // --- nhân viên thật: bàn được chia, vị trí để vẽ nhãn tên. Meo (bang chủ) có nhân vật riêng nên không vẽ thêm Reader/Saler tên Meo.
+  const crew = useMemo(() => duty.filter((s) => s.name.normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase() !== "meo"), [duty]);
+  const assign = useMemo(() => assignDesks(crew), [crew]);
   const occupied = useMemo(() => {
     const o: Record<StaffRole, boolean[]> = { reader: WORKROOMS[0].desks.map(() => false), saler: WORKROOMS[1].desks.map(() => false) };
-    for (const p of duty) {
+    for (const p of crew) {
       const i = assign.get(p.id);
       if (i !== undefined) o[p.role][i] = true;
     }
     return o;
-  }, [assign, duty]);
-  const staffPos = useRef<Record<string, { x: number; z: number }>>({});
+  }, [assign, crew]);
+  const staffPos = useRef<Record<string, PosInfo>>({});
   const screen = useRef<Record<string, { x: number; y: number; on: boolean }>>({});
   const labelRefs = useRef<Record<string, HTMLElement | null>>({});
-  const onPos = useCallback((id: string, x: number, z: number) => {
-    staffPos.current[id] = { x, z };
+  const onPos = useCallback((id: string, info: PosInfo) => {
+    staffPos.current[id] = info;
   }, []);
   const getPos = useCallback(() => staffPos.current, []);
+  // --- bang chủ Meo: gọi nhân viên lại trao đổi, hoạt động hiện tại
+  const bossCtl = useRef<BossCtl>({ key: 0, until: 0, px: 0, pz: 0, spots: {} });
+  const bossActivity = useRef("");
+  const onSummon = useCallback((spots: BossCtl["spots"], until: number, px: number, pz: number) => {
+    bossCtl.current = { key: bossCtl.current.key + 1, until, px, pz, spots };
+  }, []);
+  const onActivity = useCallback((text: string) => {
+    bossActivity.current = text;
+  }, []);
+  const deskOf = useCallback(
+    (id: string) => {
+      const idx = assign.get(id);
+      const s = crew.find((x) => x.id === id);
+      return idx !== undefined && s ? { room: s.role, idx } : null;
+    },
+    [assign, crew]
+  );
   const onProject = useCallback((id: string, x: number, y: number, on: boolean) => {
     screen.current[id] = { x, y, on };
   }, []);
@@ -720,23 +1039,43 @@ export default function Office3D({
         {AGENTS.filter((a) => a.id !== "commander" && states[a.id].startedAt && states[a.id].status !== "idle").map((a) => (
           <Parcel key={`${a.id}-${states[a.id].startedAt}`} meta={a} startedAt={states[a.id].startedAt!} />
         ))}
-        {duty.map((s) => (
-          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} />
+        {crew.map((s) => (
+          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} />
         ))}
+        <BossActor
+          roam={roam}
+          getPos={getPos}
+          deskOf={deskOf}
+          onSummon={onSummon}
+          onActivity={onActivity}
+          onPos={onPos}
+          onClick={() => onBossClick(bossActivity.current)}
+        />
         <StaffProjector get={getPos} onProject={onProject} />
         <OrbitControls makeDefault enableDamping minZoom={8} maxZoom={90} maxPolarAngle={Math.PI / 2.2} target={[2, 0.8, 4]} />
       </Canvas>
 
       {/* Tên nhân viên trên đầu nhân vật (Reader xanh lá · Saler cam) */}
       <div className="pointer-events-none absolute inset-0">
-        {duty.map((s) => (
+        <div
+          ref={(el) => {
+            labelRefs.current["boss"] = el;
+          }}
+          onClick={() => onBossClick(bossActivity.current)}
+          className="pointer-events-auto absolute left-0 top-0 flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border-2 border-amber-400 bg-gradient-to-r from-amber-50 to-white px-2.5 py-0.5 text-[11px] font-extrabold text-amber-900 shadow-md"
+          style={{ opacity: 0 }}
+        >
+          👑 Meo · Bang chủ
+        </div>
+        {crew.map((s) => (
           <div
             key={s.id}
             ref={(el) => {
               labelRefs.current[s.id] = el;
             }}
             title={`${s.role === "reader" ? "Reader" : "Saler"} · ${s.from ?? ""}–${s.to ?? ""} · ${s.state === "on" ? "đang trực" : s.state === "break" ? "nghỉ giữa ca" : "chưa tới giờ trực"}`}
-            className="absolute left-0 top-0 flex items-center gap-1 whitespace-nowrap rounded-full border bg-white/90 px-2 py-0.5 text-[10.5px] font-bold text-slate-800 shadow"
+            onClick={() => onStaffClick(s.id)}
+            className="pointer-events-auto absolute left-0 top-0 flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border bg-white/90 px-2 py-0.5 text-[10.5px] font-bold text-slate-800 shadow"
             style={{ borderColor: s.role === "reader" ? "#34d399" : "#fb923c", opacity: 0 }}
           >
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: staffLook(s.idx).shirt }} />

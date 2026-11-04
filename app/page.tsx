@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
+import type { PersonCard } from "@/lib/lookup";
 import { formatDong, staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
 
 const Office3D = dynamic(() => import("@/components/Office3D"), {
@@ -94,6 +95,31 @@ export default function Home() {
   const [maint, setMaint] = useState<Partial<Record<DeptId, boolean>>>({});
   const [dutyAll, setDutyAll] = useState<DutyStaff[]>([]);
   const [boardOpen, setBoardOpen] = useState<BoardKind | null>(null);
+  const [person, setPerson] = useState<{ loading: boolean; card?: PersonCard; error?: string } | null>(null);
+  const [bossInfo, setBossInfo] = useState<string | null>(null);
+
+  const closeCards = useCallback(() => {
+    setTvOpen(null);
+    setBoardOpen(null);
+    setPerson(null);
+    setBossInfo(null);
+  }, []);
+
+  // Chạm vào một nhân viên: tải thẻ thông tin gọn (giờ trực · ca hôm nay · lương · ca chưa xử lý).
+  const openPerson = useCallback(
+    (id: string) => {
+      closeCards();
+      setPerson({ loading: true });
+      fetch(`/api/person?id=${encodeURIComponent(id)}`, { cache: "no-store" })
+        .then(async (r) => {
+          const d = (await r.json()) as PersonCard & { error?: string };
+          if (!r.ok) throw new Error(d.error ?? "Không lấy được thông tin");
+          setPerson({ loading: false, card: d });
+        })
+        .catch((e: Error) => setPerson({ loading: false, error: e.message }));
+    },
+    [closeCards]
+  );
   const [sales, setSales] = useState<SalesToday | null>(null);
   const [cases, setCases] = useState<CasesToday | null>(null);
   // Nhân vật chỉ hiện cho người chưa hết ca; người đã hết ca chỉ có trên bảng ca.
@@ -246,7 +272,7 @@ export default function Home() {
           onSelect={setSelected}
           tv={tv}
           onTvClick={(id) => {
-            setBoardOpen(null);
+            closeCards();
             setTvOpen(id);
           }}
           maint={maint}
@@ -255,8 +281,13 @@ export default function Home() {
           sales={sales}
           cases={cases}
           onBoardClick={(k) => {
-            setTvOpen(null);
+            closeCards();
             setBoardOpen(k);
+          }}
+          onStaffClick={openPerson}
+          onBossClick={(activity) => {
+            closeCards();
+            setBossInfo(activity || "Đang nghỉ giữa các cuộc gặp");
           }}
         />
       </div>
@@ -380,6 +411,53 @@ export default function Home() {
           >
             Giao phòng này làm báo cáo chi tiết
           </button>
+        </div>
+      )}
+
+      {/* Thẻ thông tin nhân viên (chạm vào nhân vật) */}
+      {person && (
+        <div className="absolute top-4 z-20 w-[min(380px,calc(100vw-2rem))] rounded-2xl border border-slate-700 bg-[#0b1226] p-4 text-white shadow-2xl" style={{ right: panelOpen ? 372 : 16 }}>
+          <div
+            className="-mx-4 -mt-4 mb-3 flex items-center justify-between rounded-t-2xl px-4 py-2.5 text-[#0b1226]"
+            style={{ background: person.card?.role === "saler" ? "#fb923c" : person.card?.role === "qc" ? "#a3e635" : "#34d399" }}
+          >
+            <div className="text-sm font-extrabold uppercase tracking-wide">
+              👤 {person.card ? `${person.card.name} · ${person.card.role === "reader" ? "Reader" : person.card.role === "saler" ? "Saler" : "QC"}` : "Nhân viên"}
+            </div>
+            <button onClick={() => setPerson(null)} className="rounded px-2 text-lg leading-none hover:bg-black/10" aria-label="Đóng">
+              ×
+            </button>
+          </div>
+          {person.loading ? (
+            <div className="py-4 text-sm text-slate-300">Đang lấy thông tin…</div>
+          ) : person.error ? (
+            <div className="py-3 text-sm text-red-300">⚠️ {person.error}</div>
+          ) : (
+            <ul className="divide-y divide-white/10">
+              {person.card?.rows.map((r) => (
+                <li key={r.k} className="flex items-baseline justify-between gap-3 py-2">
+                  <span className="text-[12px] text-slate-300">{r.k}</span>
+                  <span className={`text-right text-[14px] font-bold ${r.warn ? "text-amber-300" : "text-white"}`}>{r.v}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-2 text-[11px] text-slate-400">Số liệu hôm nay từ Thor · chạm nhân vật khác để xem người khác</div>
+        </div>
+      )}
+
+      {/* Meo — bang chủ (Admin) */}
+      {bossInfo !== null && (
+        <div className="absolute top-4 z-20 w-[min(340px,calc(100vw-2rem))] rounded-2xl border border-amber-400/60 bg-[#1a1405] p-4 text-white shadow-2xl" style={{ right: panelOpen ? 372 : 16 }}>
+          <div className="-mx-4 -mt-4 mb-3 flex items-center justify-between rounded-t-2xl bg-amber-400 px-4 py-2.5 text-amber-950">
+            <div className="text-sm font-extrabold uppercase tracking-wide">👑 Meo · Bang chủ (Admin)</div>
+            <button onClick={() => setBossInfo(null)} className="rounded px-2 text-lg leading-none hover:bg-black/10" aria-label="Đóng">
+              ×
+            </button>
+          </div>
+          <div className="text-[12px] text-amber-200/80">Đang làm</div>
+          <div className="text-[15px] font-bold">{bossInfo}</div>
+          <div className="mt-2 text-[11px] text-amber-100/60">Meo thường xuyên gặp trao đổi 1–3 nhân viên, ngồi chỉ đạo họp và ăn uống cùng mọi người.</div>
         </div>
       )}
 

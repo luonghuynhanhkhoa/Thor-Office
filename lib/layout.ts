@@ -8,7 +8,7 @@ import { DEPTS, DEPT_BY_ID, type AgentMeta } from "@/lib/agentsMeta";
 export const WORLD = { x0: -26.5, x1: 31.5, z0: -17, z1: 25 };
 
 export type LoungeId = "tea" | "dining" | "gym" | "rest" | "meeting";
-export type Pose = "sip" | "eat" | "run" | "lift" | "nap" | "meet" | "stretch" | "box" | "type";
+export type Pose = "sip" | "eat" | "run" | "lift" | "nap" | "meet" | "stretch" | "box" | "type" | "talk";
 
 export type Spot = {
   /** Toạ độ so với tâm khu. */
@@ -118,10 +118,13 @@ export const LOUNGES: LoungeMeta[] = [
       { x: 0, z: -1.3, face: 0, pose: "meet", sit: true, via: [[-3.2, 2.1], [-3.2, -1.3]] },
       { x: 1.5, z: -1.3, face: 0, pose: "meet", sit: true, via: [[3.2, 2.1], [3.2, -1.3]] },
       { x: -2.8, z: 0.1, face: PI / 2, pose: "meet", sit: true, via: [[-3.2, 2.1]] },
-      { x: 2.8, z: 0.1, face: -PI / 2, pose: "meet", sit: true, via: [[3.2, 2.1]] },
+
     ],
   },
 ];
+
+/** Ghế đầu bàn họp (phía đông) — DÀNH RIÊNG cho bang chủ Meo ngồi chỉ đạo. */
+export const MEO_SEAT: Spot = { x: 2.8, z: 0.1, face: -PI / 2, pose: "meet", sit: true, via: [[3.2, 2.1]] };
 
 export const LOUNGE_BY_ID = Object.fromEntries(LOUNGES.map((l) => [l.id, l])) as Record<LoungeId, LoungeMeta>;
 export const LOUNGE_IDS = LOUNGES.map((l) => l.id);
@@ -402,7 +405,9 @@ export function buildRoute(meta: AgentMeta, lounge: LoungeMeta, spot: Spot): Rou
 export type PlaceNode =
   | { kind: "out"; x: number; z: number }
   | { kind: "lounge"; id: LoungeId; spot: Spot }
-  | { kind: "desk"; room: StaffRole; idx: number };
+  | { kind: "desk"; room: StaffRole; idx: number }
+  /** Đứng cạnh bàn làm việc (không ngồi) để trao đổi với người đang ngồi đó. */
+  | { kind: "visit"; room: StaffRole; idx: number };
 
 /** Từ ghế ngồi → lối đi giữa hàng bàn → cửa phòng → điểm ngoài cửa. */
 export function deskHomePts(room: WorkRoom, idx: number): [number, number][] {
@@ -413,10 +418,17 @@ export function deskHomePts(room: WorkRoom, idx: number): [number, number][] {
   return [[d.x, d.z + 0.95], [d.x, lane], [cx, lane], [cx, doorZ], [cx, doorZ + 0.8]];
 }
 
+/** Chỗ đứng cạnh bàn (lối đi phía trước ghế) để trao đổi với người đang ngồi. */
+export const visitSpot = (room: WorkRoom, idx: number): [number, number] => {
+  const d = room.desks[idx];
+  return [d.x, d.row === 0 ? room.aisleZ : room.standZ];
+};
+
 export const deskChair = (room: WorkRoom, idx: number): [number, number] => [room.desks[idx].x, room.desks[idx].z + 0.95];
 
 export function nodePos(n: PlaceNode): [number, number] {
   if (n.kind === "out") return [n.x, n.z];
+  if (n.kind === "visit") return visitSpot(WORKROOM_BY_ID[n.room], n.idx);
   if (n.kind === "desk") return deskChair(WORKROOM_BY_ID[n.room], n.idx);
   const l = LOUNGE_BY_ID[n.id];
   return [l.center[0] + n.spot.x, l.center[1] + n.spot.z];
@@ -429,6 +441,7 @@ function loungeEnter(l: LoungeMeta, spot: Spot): [number, number][] {
 /** Danh sách điểm đi RA khỏi nút (kết thúc ở một điểm ngoài trời). */
 function exitList(n: PlaceNode): [number, number][] {
   if (n.kind === "out") return [[n.x, n.z]];
+  if (n.kind === "visit") return [...deskHomePts(WORKROOM_BY_ID[n.room], n.idx)].slice(1);
   if (n.kind === "desk") return deskHomePts(WORKROOM_BY_ID[n.room], n.idx);
   const l = LOUNGE_BY_ID[n.id];
   return [...loungeEnter(l, n.spot).reverse(), l.mouth];
@@ -437,6 +450,7 @@ function exitList(n: PlaceNode): [number, number][] {
 /** Danh sách điểm đi VÀO nút (bắt đầu từ một điểm ngoài trời). */
 function enterList(n: PlaceNode): [number, number][] {
   if (n.kind === "out") return [[n.x, n.z]];
+  if (n.kind === "visit") return [...deskHomePts(WORKROOM_BY_ID[n.room], n.idx)].slice(1).reverse();
   if (n.kind === "desk") return deskHomePts(WORKROOM_BY_ID[n.room], n.idx).reverse();
   const l = LOUNGE_BY_ID[n.id];
   return [l.mouth, ...loungeEnter(l, n.spot)];

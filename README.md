@@ -31,6 +31,11 @@ Thử nhanh: `?hour=8` (ép giờ trong ngày) và/hoặc `?fast=1` (AI đi lạ
 - AI rảnh tự **tìm đường (A\*)** quanh các công trình tới khu nghỉ/họp theo giờ VN (sáng cà phê/ăn sáng, 9–10h30 họp đầu ngày, trưa ăn rồi nghỉ, 14–15h30 họp nhanh, chiều tập gym) và về bàn ngay khi có việc.
 - Bên trái có **ghi chú màu** theo phòng ban/nhiệm vụ + ý nghĩa đèn cửa; trong cảnh không có nhãn tên phòng hay nhãn từng AI cho đỡ rối. Bấm từng AI = xem việc của AI đó.
 
+## Chạm vào nhân vật + Meo bang chủ
+
+- **Chạm vào một nhân viên** (nhân vật hoặc nhãn tên) → thẻ gọn: giờ trực hôm nay · số ca hôm nay (Reader: ca/đơn Sale giao; Saler: khách/đơn/doanh thu) · còn mấy ca chưa xử lý (Reader: số ca đang đợi + giờ; Saler: đơn chưa gán Reader) · lương tạm tính tháng. API `/api/person?id=…`, mã `lib/lookup.ts` (`personCard`).
+- **Meo — bang chủ (Admin)**: nhân vật riêng (áo tím, vương miện, nhãn "👑 Meo · Bang chủ"), luôn có mặt. Thường xuyên **gặp trao đổi 1-1 / 1-2 / 1-3 nhân viên** (gọi họ ra đứng quanh mình, hoặc ghé tận bàn người đang trực), **ngồi ghế đầu bàn chỉ đạo họp** trong phòng họp (đặc biệt 9–10h30 và 14–15h30) và **ăn uống cùng mọi người** (lúc Meo họp/ăn, nhân viên cũng hay kéo tới đúng phòng đó). Chạm vào Meo xem đang làm gì. Reader/Saler tên "Meo" trong Thor không vẽ thêm nhân vật riêng (đã có bang chủ).
+
 ## Hỏi gì trả đúng đó (không đưa báo cáo tổng thể nếu không xin)
 
 - **Nhắc tên một Reader/Saler/QC** (vd `Moon`, `Reader Moon lương tháng này`, `Hiếu bán được gì hôm nay`, `Thuý Đàm ca hôm nay`) → chỉ trả thông tin ĐÚNG NGƯỜI đó, đúng chủ đề hỏi (giờ trực · ca/hẹn giờ · đơn/bán hàng · lương · điểm QC & khiếu nại; không nêu chủ đề thì đủ các mục của người đó). Tên ngắn (Su, TP, Ân, Chi, Mai…) phải viết hoa hoặc có chữ Reader/Saler/QC đứng trước; viết đúng dấu (Thỏ ≠ Thơ) được ưu tiên; trùng tên khác vai trò thì chỉ giữ người có thông tin đúng chủ đề. Mã: `lib/lookup.ts`.

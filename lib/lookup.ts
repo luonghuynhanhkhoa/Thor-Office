@@ -194,3 +194,70 @@ export async function resolvePeople(ctx: Ctx, request: string): Promise<StaffFul
     return [];
   }
 }
+
+// ------------------------------------------------------------------ thẻ thông tin khi chạm vào nhân vật
+export type PersonRow = { k: string; v: string; warn?: boolean };
+export type PersonCard = { id: string; name: string; role: StaffFull["role"]; rows: PersonRow[] };
+
+async function shiftLine(p: StaffFull): Promise<string> {
+  const rows = await fetchAll<{ start_time: string | null; end_time: string | null; slots: Slot[] | null }>(
+    "reader_hours",
+    `select=start_time,end_time,slots&reader_id=eq.${p.id}&work_date=eq.${todayKey()}&order=id.asc`
+  );
+  const h = rows[0];
+  if (!h) return "chưa đăng ký giờ hôm nay";
+  const s = hhmmToMin(h.start_time);
+  const e = hhmmToMin(h.end_time);
+  if (s === null || e === null) return "nghỉ cả ngày";
+  const now = nowMinutesVN();
+  const offs = (h.slots ?? []).filter((x) => x.kind === "off" && !x.allDay && hhmmToMin(x.start ?? null) !== null && hhmmToMin(x.end ?? null) !== null);
+  const inOff = offs.some((x) => now >= (hhmmToMin(x.start ?? null) ?? 0) && now < (hhmmToMin(x.end ?? null) ?? 0));
+  const state = now < s ? "chưa tới giờ" : now >= e ? "đã hết ca" : inOff ? "đang nghỉ giữa ca" : "ĐANG TRỰC";
+  return `${h.start_time?.slice(0, 5)}–${h.end_time?.slice(0, 5)} · ${state}${offs.length ? ` (nghỉ ${offs.map((x) => `${x.start?.slice(0, 5)}–${x.end?.slice(0, 5)}`).join(", ")})` : ""}`;
+}
+
+/** Thẻ gọn: giờ trực · số ca hôm nay · còn mấy ca chưa xử lý · lương tạm tính. */
+export async function personCard(ctx: Ctx, p: StaffFull): Promise<PersonCard> {
+  const rows: PersonRow[] = [];
+  const today = todayKey();
+  const [orders, pay] = await Promise.all([monthOrders(ctx), computePayroll(ctx)]);
+  const mine = orders.filter((o) => (p.role === "reader" ? o.reader_id === p.id : p.role === "saler" ? o.saler_id === p.id : false));
+  const row = pay.rows.find((r) => r.id === p.id);
+
+  if (p.role !== "qc") rows.push({ k: "Giờ trực hôm nay", v: await shiftLine(p) });
+
+  if (p.role === "reader") {
+    const cases = await getCasesToday().catch(() => null);
+    const r = cases?.readers.find((x) => x.id === p.id);
+    const todayN = r?.ordersToday ?? mine.filter((o) => o.order_date === today).length;
+    rows.push(
+      { k: "Hôm nay được giao", v: `${todayN} ca (đơn)` },
+      { k: "Đã xong hôm nay", v: `${r?.done ?? 0} ca` },
+      { k: "Còn chưa xử lý", v: r && r.waiting.length ? `${r.waiting.length} ca — ${r.waiting.slice(0, 4).join(" · ")}${r.waiting.length > 4 ? "…" : ""}` : "0 ca", warn: !!r && r.waiting.length > 0 }
+    );
+    if (r?.handling) rows.push({ k: "Đang xử lý", v: `ca ${r.handling}` });
+  } else if (p.role === "saler") {
+    const sales = await getSalesToday().catch(() => null);
+    const s = sales?.salers.find((x) => x.id === p.id);
+    rows.push(
+      { k: "Hôm nay bán", v: `${s?.customers ?? 0} khách · ${s?.orders ?? 0} đơn` },
+      { k: "Doanh thu hôm nay", v: formatVND(s?.revenue ?? 0) },
+      ...(s?.packages.length ? [{ k: "Gói đã bán", v: s.packages.slice(0, 3).map((g) => `${g.name} ×${g.count}`).join(" · ") }] : [])
+    );
+    const noReader = mine.filter((o) => !o.reader_id).length;
+    rows.push({ k: "Đơn chưa gán Reader (tháng)", v: `${noReader} đơn`, warn: noReader > 0 });
+  } else {
+    const reviews = (await monthReviews(ctx)).filter((r) => r.qc_id === p.id);
+    const reviewed = new Set((await monthReviews(ctx)).map((r) => r.order_id));
+    rows.push(
+      { k: "Phiếu đã chấm tháng này", v: `${reviews.length} phiếu` },
+      { k: "Đơn chưa ai chấm (tháng)", v: `${orders.filter((o) => !reviewed.has(o.id)).length} đơn` }
+    );
+  }
+
+  rows.push({
+    k: "Lương tạm tính tháng này",
+    v: row ? `${formatVND(row.salary)} · ${row.orderCount} ${p.role === "qc" ? "phiếu" : "đơn"}${p.role === "reader" ? ` · upsale ${Math.round((row.upsaleRate ?? 0) * 1000) / 10}% (+${Math.round((row.bonusRate ?? 0) * 100)}%)` : ""}` : "—",
+  });
+  return { id: p.id, name: p.name, role: p.role, rows };
+}
