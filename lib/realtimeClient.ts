@@ -247,22 +247,48 @@ import { asCostume } from "@/lib/costumes";
 
 export type OfficeMember = { uid: string; name: string; staffIds: string[]; costume: CostumeId; boss: boolean };
 
-/** Báo "tôi đang trực tuyến + mặc đồ gì" cho mọi người; nhận danh sách người đang trực tuyến. Trang phục của mỗi người hiện ở nhân vật của họ trên máy của tất cả. */
+/** Trạng thái một nhân vật gửi qua mạng: [x, z, hướng, chế độ(0 ngồi bàn·1 đi·2 đứng/ngồi tại chỗ), tư thế, ngồi?]. */
+export type Snap = [number, number, number, 0 | 1 | 2, string | null, 0 | 1];
+/** Một gói "thế giới": máy CHỦ chạy mô phỏng và gửi vị trí mọi nhân vật; các máy còn lại chỉ nhận và đi theo → ai cũng thấy y hệt nhau. */
+export type WorldMsg = { k: string; t: number; full: boolean; a: Record<string, Snap>; ba?: string };
+
+/**
+ * Báo "tôi đang trực tuyến + mặc đồ gì" cho mọi người; nhận danh sách người đang trực tuyến. Trang phục của mỗi người hiện ở nhân vật của họ trên máy của tất cả.
+ * Cùng kênh này còn chọn ra 1 máy CHỦ (vào sớm nhất, ưu tiên tab đang mở) + truyền/nhận gói "thế giới" (vị trí các nhân vật).
+ */
 export function openPresence(
   cfg: RtConfig,
   me: OfficeMember & { key: string },
-  onSync: (members: OfficeMember[]) => void
-): { setCostume: (c: CostumeId) => void; close: () => void } {
+  onSync: (members: OfficeMember[], hostKey: string | null, peerCount: number) => void,
+  onWorld: (msg: WorldMsg) => void
+): { setCostume: (c: CostumeId) => void; sendWorld: (msg: WorldMsg) => void; close: () => void } {
   const sb = clientFor(cfg);
   const ch = sb.channel(`office:${cfg.ns}`, { config: { presence: { key: me.key } } });
   let current = me.costume;
-  const payload = () => ({ uid: me.uid, name: me.name, staffIds: me.staffIds, costume: current, boss: me.boss });
+  let subscribed = false;
+  const since = Date.now();
+  const seen = () => (typeof document === "undefined" ? true : document.visibilityState !== "hidden");
+  let vis = seen();
+  const payload = () => ({ uid: me.uid, name: me.name, staffIds: me.staffIds, costume: current, boss: me.boss, since, vis });
+  const onVis = () => {
+    const v = seen();
+    if (v === vis) return;
+    vis = v;
+    if (subscribed) void ch.track(payload());
+  };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
+  ch.on("broadcast", { event: "world" }, (m) => {
+    const p = m.payload as WorldMsg | undefined;
+    if (p && typeof p.k === "string" && p.a && typeof p.a === "object") onWorld(p);
+  });
   ch.on("presence", { event: "sync" }, () => {
-    const state = ch.presenceState() as Record<string, Partial<OfficeMember>[]>;
+    const state = ch.presenceState() as Record<string, (Partial<OfficeMember> & { since?: number; vis?: boolean })[]>;
     const byUid = new Map<string, OfficeMember>();
-    for (const list of Object.values(state)) {
+    const cand: { key: string; since: number; vis: boolean }[] = [];
+    for (const [key, list] of Object.entries(state)) {
       const m = list[list.length - 1];
       if (!m?.uid || typeof m.name !== "string") continue;
+      cand.push({ key, since: typeof m.since === "number" ? m.since : 0, vis: m.vis !== false });
       byUid.set(m.uid, {
         uid: m.uid,
         name: m.name.slice(0, 40),
@@ -271,19 +297,61 @@ export function openPresence(
         boss: !!m.boss,
       });
     }
-    onSync([...byUid.values()]);
+    // máy chủ = người vào sớm nhất; tab bị ẩn (trình duyệt dừng vẽ) thì nhường cho người đang xem
+    const pool = cand.some((c) => c.vis) ? cand.filter((c) => c.vis) : cand;
+    pool.sort((a, b) => a.since - b.since || (a.key < b.key ? -1 : 1));
+    onSync([...byUid.values()], pool[0]?.key ?? null, cand.length);
   });
   ch.subscribe(async (status) => {
-    if (status === "SUBSCRIBED") await ch.track(payload());
+    subscribed = status === "SUBSCRIBED";
+    if (subscribed) await ch.track(payload());
   });
   return {
     setCostume: (c) => {
       current = c;
-      void ch.track(payload());
+      if (subscribed) void ch.track(payload());
+    },
+    sendWorld: (msg) => {
+      if (subscribed) void ch.send({ type: "broadcast", event: "world", payload: msg });
     },
     close: () => {
+      subscribed = false;
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
       void sb.removeChannel(ch);
     },
   };
 }
 
+
+// ------------------------------------------------------------------ chat thế giới / chat riêng
+import type { ChatChannels, ChatMsg } from "@/lib/chat";
+import { CHAT_EVENT } from "@/lib/chat";
+
+/** Nghe các kênh chat của mình (thế giới + hộp thư riêng + giám sát nếu là Admin). Tin do MÁY CHỦ gửi (đã đóng dấu người gửi). */
+export function openChat(cfg: RtConfig, ch: ChatChannels, onMsg: (m: ChatMsg) => void): { close: () => void } {
+  const sb = clientFor(cfg);
+  const names = [...new Set([ch.world, ch.inbox, ch.admin].filter((x): x is string => !!x))];
+  const chans: RealtimeChannel[] = names.map((n) =>
+    sb
+      .channel(n)
+      .on("broadcast", { event: CHAT_EVENT }, ({ payload }) => {
+        const p = payload as Partial<ChatMsg> | undefined;
+        if (p && typeof p.id === "string" && typeof p.text === "string" && p.from && typeof p.from.uid === "string" && typeof p.from.name === "string") {
+          onMsg({
+            id: p.id,
+            t: typeof p.t === "number" ? p.t : Date.now(),
+            world: !!p.world,
+            from: { uid: p.from.uid, name: p.from.name.slice(0, 40) },
+            to: p.to && typeof p.to.uid === "string" ? { uid: p.to.uid, name: String(p.to.name ?? "?").slice(0, 40) } : undefined,
+            text: p.text.slice(0, 400),
+          });
+        }
+      })
+      .subscribe()
+  );
+  return {
+    close: () => {
+      for (const c of chans) void sb.removeChannel(c);
+    },
+  };
+}

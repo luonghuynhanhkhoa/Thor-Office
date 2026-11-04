@@ -195,6 +195,23 @@ export function thorPublic(): { url: string; key: string } | null {
   return e?.pub ? { url: e.url, key: e.pub } : null;
 }
 
+/** Gửi tin lên kênh Realtime của Supabase từ máy chủ (REST broadcast, dùng khoá bí mật). true = đã gửi. */
+export async function thorBroadcast(messages: { topic: string; event: string; payload: unknown }[]): Promise<boolean> {
+  const env = loadEnv();
+  if (!env) return false;
+  try {
+    const res = await fetch(`${env.url}/realtime/v1/api/broadcast`, {
+      method: "POST",
+      headers: { ...authHeaders(env), "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: messages.map((m) => ({ ...m, private: false })) }),
+      cache: "no-store",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Kiểm tra email + mật khẩu bằng Supabase Auth của Thor. Chỉ lấy mã người dùng, KHÔNG giữ token. Sai → null. */
 export async function passwordLogin(email: string, password: string): Promise<{ id: string; email: string } | null> {
   const env = needEnv();

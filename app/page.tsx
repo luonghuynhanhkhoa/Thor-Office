@@ -5,7 +5,10 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
-import { FX_INFO, openFxChannel, openPresence, type FxEvent, type FxKind, type OfficeMember, type RtConfig } from "@/lib/realtimeClient";
+import { FX_INFO, openChat, openFxChannel, openPresence, type FxEvent, type FxKind, type OfficeMember, type RtConfig, type Snap, type WorldMsg } from "@/lib/realtimeClient";
+import type { WorldInbox } from "@/components/Office3D";
+import ChatPanel from "@/components/ChatPanel";
+import type { ChatChannels, ChatMsg } from "@/lib/chat";
 import { COSTUMES, asCostume, type CostumeId } from "@/lib/costumes";
 import type { TvData } from "@/lib/tv";
 import type { PersonCard } from "@/lib/lookup";
@@ -124,13 +127,23 @@ export default function Home() {
   const [bossInfo, setBossInfo] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [rt, setRt] = useState<RtConfig | null>(null);
+  const [chatCh, setChatCh] = useState<ChatChannels | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([]);
+  const [chatSeenAt, setChatSeenAt] = useState(0);
   const [denied, setDenied] = useState<{ id?: string; name?: string; what: string; neutral?: boolean } | null>(null);
   const [fxEvents, setFxEvents] = useState<FxEvent[]>([]);
   const [meetOpen, setMeetOpen] = useState(false);
   const [myCostume, setMyCostume] = useState<CostumeId>("default");
   const [members, setMembers] = useState<OfficeMember[]>([]);
   const [costumeOpen, setCostumeOpen] = useState(false);
-  const presence = useRef<{ setCostume: (c: CostumeId) => void; close: () => void } | null>(null);
+  const presence = useRef<{ setCostume: (c: CostumeId) => void; sendWorld: (m: WorldMsg) => void; close: () => void } | null>(null);
+  const [isHostState, setIsHostState] = useState(true);
+  const [peerCount, setPeerCount] = useState(0);
+  const myKeyRef = useRef("");
+  const hostKeyRef = useRef<string | null>(null);
+  const peerRef = useRef(0);
+  const inbox = useRef<WorldInbox | null>(null);
   const fxSend = useRef<((kind: FxKind, fromName: string, toId: string, toName: string) => void) | null>(null);
   const admin = !!me?.admin;
   const router = useRouter();
@@ -148,7 +161,8 @@ export default function Home() {
   useEffect(() => {
     fetch("/api/me", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d: { user?: Me; realtime?: RtConfig | null } | null) => {
+      .then((d: { user?: Me; realtime?: RtConfig | null; chat?: ChatChannels } | null) => {
+        if (d?.chat) setChatCh(d.chat);
         if (d?.user) {
           setMe(d.user);
           try {
@@ -177,13 +191,59 @@ export default function Home() {
   useEffect(() => {
     if (!rt || !me) return;
     const key = `${me.uid}-${Math.random().toString(36).slice(2, 7)}`;
-    const h = openPresence(rt, { key, uid: me.uid, name: me.name, staffIds: me.staffIds, costume: "default", boss: me.name === "Meo" }, setMembers);
+    myKeyRef.current = key;
+    const h = openPresence(
+      rt,
+      { key, uid: me.uid, name: me.name, staffIds: me.staffIds, costume: "default", boss: me.name === "Meo" },
+      (ms, hk, n) => {
+        setMembers(ms);
+        hostKeyRef.current = hk;
+        peerRef.current = n;
+        setIsHostState(!hk || hk === key);
+        setPeerCount(n);
+      },
+      (msg) => {
+        // chỉ nhận vị trí từ đúng máy chủ hiện tại
+        if (msg.k !== hostKeyRef.current) return;
+        const now = Date.now();
+        const ib = inbox.current ?? { at: 0, a: {}, ts: {}, ba: "" };
+        for (const [k, s] of Object.entries(msg.a)) {
+          ib.a[k] = s;
+          ib.ts[k] = now;
+        }
+        ib.at = now;
+        ib.ba = typeof msg.ba === "string" ? msg.ba.slice(0, 120) : "";
+        inbox.current = ib;
+      }
+    );
     presence.current = h;
     return () => {
       presence.current = null;
+      myKeyRef.current = "";
       h.close();
     };
   }, [rt, me]);
+  // Chat thế giới / riêng: nghe các kênh của mình (tin do máy chủ gửi, đã đóng dấu người gửi).
+  useEffect(() => {
+    if (!rt || !chatCh) return;
+    const h = openChat(rt, chatCh, (m) => setChatMsgs((list) => (list.some((x) => x.id === m.id) ? list : [...list, m].slice(-300))));
+    return () => h.close();
+  }, [rt, chatCh]);
+  const sendChat = useCallback(async (to: { uid: string; name: string } | null, text: string): Promise<string | null> => {
+    try {
+      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, to: to?.uid ?? null, toName: to?.name ?? "" }) });
+      if (r.ok) return null;
+      const d = (await r.json().catch(() => null)) as { error?: string } | null;
+      return d?.error ?? "Chưa gửi được";
+    } catch {
+      return "Mất kết nối, thử lại nhé";
+    }
+  }, []);
+  // Đồng bộ vị trí: 1 máy làm chủ (chạy mô phỏng) — các máy khác đi theo. Chạy một mình thì tự chạy như cũ.
+  const isHost = !rt || isHostState;
+  const worldOut = useCallback((m: { full: boolean; a: Record<string, Snap>; ba: string }) => {
+    if (peerRef.current > 1 && myKeyRef.current) presence.current?.sendWorld({ k: myKeyRef.current, t: Date.now(), ...m });
+  }, []);
   useEffect(() => {
     presence.current?.setCostume(myCostume);
   }, [myCostume, rt, me]);
@@ -417,6 +477,10 @@ export default function Home() {
     <main className="relative h-dvh w-full overflow-hidden bg-[#eef3ff] text-slate-800">
       <div className="absolute inset-0">
         <Office3D
+          host={isHost}
+          inbox={inbox}
+          onWorldOut={rt ? worldOut : undefined}
+          resync={peerCount}
           states={states}
           selected={selected}
           onSelect={setSelected}
@@ -471,6 +535,20 @@ export default function Home() {
                   setMeetOpen((v) => !v);
                 }} className="rounded-full border border-amber-400 bg-white/90 px-3 py-1 text-[11px] font-bold text-amber-800 shadow-sm hover:bg-amber-50">
                 📞 Phòng họp (gọi video)
+              </button>
+            )}
+            {chatCh && rt && (
+              <button
+                onClick={() => {
+                  setChatSeenAt(Date.now());
+                  setChatOpen((v) => !v);
+                }}
+                className="rounded-full border border-sky-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-sky-700 shadow-sm hover:bg-sky-50"
+              >
+                💬 Chat
+                {!chatOpen && chatMsgs.some((m) => m.from.uid !== me.uid && m.t > chatSeenAt) && (
+                  <span className="ml-1 rounded-full bg-red-500 px-1.5 text-[10px] font-extrabold text-white">{chatMsgs.filter((m) => m.from.uid !== me.uid && m.t > chatSeenAt).length}</span>
+                )}
               </button>
             )}
             <button onClick={() => setCostumeOpen((v) => !v)} className="rounded-full border border-fuchsia-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-fuchsia-700 shadow-sm hover:bg-fuchsia-50">
@@ -573,6 +651,21 @@ export default function Home() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Chat thế giới + chat riêng */}
+      {chatOpen && me && (
+        <ChatPanel
+          me={{ uid: me.uid, name: me.name }}
+          admin={admin}
+          online={members.filter((m) => m.uid !== me.uid).map((m) => ({ uid: m.uid, name: m.name }))}
+          msgs={chatMsgs}
+          onSend={sendChat}
+          onClose={() => {
+            setChatSeenAt(Date.now());
+            setChatOpen(false);
+          }}
+        />
       )}
 
       {/* Chọn trang phục cho nhân vật của mình */}

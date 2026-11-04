@@ -75,6 +75,22 @@ export async function readSession(token: string | undefined | null): Promise<Ses
   }
 }
 
+/** Tên kênh chat đã băm (HMAC) — không đoán được từ mã người dùng; chỉ máy chủ biết cách tính. */
+export async function chatChannel(name: string): Promise<string> {
+  const key = await hmacKey();
+  if (!key) return `chat-local-${name}`.slice(0, 64);
+  return `c${b64(await crypto.subtle.sign("HMAC", key, enc.encode(`chat|${name}`))).slice(0, 24)}`;
+}
+
+/** Các kênh chat mà người này được nghe: thế giới + hộp thư riêng của mình (+ giám sát nếu là Admin). */
+export async function chatChannelsFor(uid: string, admin: boolean): Promise<{ world: string; inbox: string; admin?: string }> {
+  return {
+    world: await chatChannel("world"),
+    inbox: await chatChannel(`inbox:${uid}`),
+    ...(admin ? { admin: await chatChannel("admin") } : {}),
+  };
+}
+
 /** Mã kênh thời gian thực: khó đoán, đổi mỗi ngày, chỉ người đã đăng nhập mới biết (kênh Supabase là kênh công khai). */
 export async function channelNamespace(): Promise<string> {
   const key = await hmacKey();

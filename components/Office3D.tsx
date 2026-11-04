@@ -36,7 +36,7 @@ import {
   type StaffRole,
 } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
-import { FX_INFO, type FxEvent, type FxKind } from "@/lib/realtimeClient";
+import { FX_INFO, type FxEvent, type FxKind, type Snap } from "@/lib/realtimeClient";
 import { staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
 import { Buildings, Hall, LogoSigns, WorkRooms, Zone, type DoorState } from "@/components/Campus";
 import { B } from "@/components/sceneKit";
@@ -251,10 +251,65 @@ type Sim = { phase: Phase; s: number; route: Route | null; lounge: LoungeId | nu
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
-function Agent({ meta, st, onSelect, roam, locked }: { meta: AgentMeta; st: AgentState; onSelect: (id: AgentId) => void; roam: Roam; locked: boolean }) {
+// ---------------------------------------------------------------- đồng bộ giữa nhiều người xem
+/**
+ * Một máy là CHỦ: chạy mô phỏng đi lại rồi gửi vị trí mọi nhân vật; các máy còn lại KHÔNG tự mô phỏng mà đi theo vị trí đó
+ * (nội suy mượt + đoán tiếp khi đang đi) → mọi người thấy cùng một văn phòng. Mất kết nối với máy chủ > 7 giây thì tự mô phỏng tạm.
+ */
+export type WorldInbox = { at: number; a: Record<string, Snap>; ts: Record<string, number>; ba: string };
+type Sync = { host: React.RefObject<boolean>; inbox: React.RefObject<WorldInbox | null>; out: React.RefObject<Record<string, Snap>> };
+type View = { init: boolean; x: number; z: number; h: number };
+const MODES: Ctl["mode"][] = ["desk", "walk", "spot"];
+const r2 = (v: number) => Math.round(v * 100) / 100;
+
+/** Đang là máy theo dõi và đã có vị trí mới của nhân vật này → trả về; ngược lại null (tự mô phỏng). */
+function followSnap(sync: Sync, key: string): Snap | null {
+  if (sync.host.current) return null;
+  const ib = sync.inbox.current;
+  if (!ib || Date.now() - ib.at > 7000) return null;
+  return ib.a[key] ?? null;
+}
+
+/** Máy chủ: ghi vị trí vừa tính để gửi đi. */
+function publish(sync: Sync, key: string, x: number, z: number, h: number, C: Ctl) {
+  if (!sync.host.current) return;
+  sync.out.current[key] = [r2(x), r2(z), r2(h), C.mode === "desk" ? 0 : C.mode === "walk" ? 1 : 2, C.pose, C.sit ? 1 : 0];
+}
+
+/** Máy theo dõi: đặt nhân vật theo vị trí của máy chủ (nội suy + đoán tiếp khi đang đi). Trả về vị trí hiện tại. */
+function followFrame(grp: THREE.Group, C: Ctl, view: View, snap: Snap, key: string, sync: Sync, dt: number, speed: number) {
+  const [sx, sz, sh, m, p, s] = snap;
+  let tx = sx;
+  let tz = sz;
+  if (m === 1) {
+    const age = Math.min(0.6, (Date.now() - (sync.inbox.current?.ts[key] ?? 0)) / 1000);
+    tx += Math.sin(sh) * speed * age;
+    tz += Math.cos(sh) * speed * age;
+  }
+  if (!view.init || Math.hypot(tx - view.x, tz - view.z) > 5) {
+    view.init = true;
+    view.x = tx;
+    view.z = tz;
+    view.h = sh;
+  } else {
+    const k = 1 - Math.exp(-dt * 12);
+    view.x += (tx - view.x) * k;
+    view.z += (tz - view.z) * k;
+    view.h = lerpAngle(view.h, sh, Math.min(1, dt * 10));
+  }
+  grp.position.set(view.x, 0, view.z);
+  grp.rotation.y = view.h;
+  C.mode = MODES[m];
+  C.pose = (p as Pose | null) ?? null;
+  C.sit = s === 1;
+  return view;
+}
+
+function Agent({ meta, st, onSelect, roam, locked, sync }: { meta: AgentMeta; st: AgentState; onSelect: (id: AgentId) => void; roam: Roam; locked: boolean; sync: Sync }) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "desk", pose: null, sit: true, status: st.status });
   const sim = useRef<Sim>({ phase: "seated", s: 0, route: null, lounge: null, idx: -1, spot: null, nextAt: -1, leaveAt: 0, heading: Math.PI });
+  const view = useRef<View>({ init: false, x: 0, z: 0, h: Math.PI });
   const [px, pz] = meta.pos;
 
   useEffect(() => {
@@ -268,6 +323,14 @@ function Agent({ meta, st, onSelect, roam, locked }: { meta: AgentMeta; st: Agen
     const C = ctl.current;
     const now = clock.elapsedTime;
     const dt = Math.min(dtRaw, 0.1);
+    const snap = followSnap(sync, meta.id);
+    if (snap) {
+      // theo máy chủ: bỏ mô phỏng riêng (xoá dở dang để khỏi nhảy lung tung nếu sau này mình thành chủ)
+      Object.assign(S, { phase: "seated", s: 0, route: null, lounge: null, idx: -1, spot: null, nextAt: -1 });
+      followFrame(grp, C, view.current, snap, meta.id, sync, dt, 1.6 * (roam.fast ? 3 : 1));
+      return;
+    }
+    view.current.init = false;
     // Phòng đang chỉnh sửa (khoá cửa): AI ở lại bàn; đang ở ngoài thì về ngay.
     const idle = C.status === "idle" && !locked;
     const k = roam.fast ? 3 : 1;
@@ -357,6 +420,7 @@ function Agent({ meta, st, onSelect, roam, locked }: { meta: AgentMeta; st: Agen
       C.sit = false;
       C.pose = null;
     }
+    publish(sync, meta.id, x, z, S.heading, C);
   });
 
   return (
@@ -464,6 +528,7 @@ function StaffActor({
   onClick,
   fx,
   costume,
+  sync,
 }: {
   staff: DutyStaff;
   deskIdx: number | null;
@@ -473,10 +538,12 @@ function StaffActor({
   onClick: (id: string) => void;
   fx: React.RefObject<FxMap>;
   costume?: CostumeId;
+  sync: Sync;
 }) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "walk", pose: null, sit: false, status: "idle" });
   const sim = useRef<StaffSim>({ init: false, node: { kind: "out", x: 0, z: 0 }, target: null, route: null, s: 0, phase: "idle", dwellUntil: 0, heading: 0, held: null, attendKey: -1, attending: false });
+  const view = useRef<View>({ init: false, x: 0, z: 0, h: 0 });
   const look = staffLook(staff.idx);
 
   useEffect(() => {
@@ -495,6 +562,16 @@ function StaffActor({
     const now = clock.elapsedTime;
     const dt = Math.min(dtRaw, 0.1);
     const k = roam.fast ? 3 : 1;
+    const snap = followSnap(sync, staff.id);
+    if (snap) {
+      // theo máy chủ: không tự mô phỏng
+      Object.assign(S, { init: false, phase: "idle", route: null, target: null, held: null, attending: false });
+      const v = followFrame(grp, C, view.current, snap, staff.id, sync, dt, 1.5 * k);
+      applyFx(grp, fx.current?.[staff.id], v.h);
+      onPos(staff.id, { x: v.x, z: v.z, desk: snap[3] === 0, moving: snap[3] === 1, name: staff.name });
+      return;
+    }
+    view.current.init = false;
     const deskNode: PlaceNode | null = deskIdx !== null ? { kind: "desk", room: staff.role, idx: deskIdx } : null;
     const wantDesk = staff.state === "on" && deskNode !== null;
 
@@ -602,6 +679,7 @@ function StaffActor({
       C.sit = false;
       C.pose = S.attending ? "talk" : null;
     }
+    publish(sync, staff.id, x, z, S.heading, C);
   });
 
   return (
@@ -649,7 +727,9 @@ function BossActor({
   onClick,
   fx,
   costume,
+  sync,
 }: {
+  sync: Sync;
   roam: Roam;
   getPos: () => Record<string, PosInfo>;
   deskOf: (id: string) => { room: StaffRole; idx: number } | null;
@@ -663,6 +743,7 @@ function BossActor({
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "spot", pose: null, sit: false, status: "idle" });
   const sim = useRef<BossSim>({ init: false, node: { kind: "out", x: 0, z: 5.8 }, target: null, route: null, s: 0, phase: "idle", nextAt: -1, stayUntil: 0, stayFor: 0, heading: Math.PI, held: null, kind: null, faceTo: null });
+  const view = useRef<View>({ init: false, x: 0, z: 5.8, h: Math.PI });
 
   useEffect(() => {
     const S = sim.current;
@@ -679,6 +760,17 @@ function BossActor({
     const now = clock.elapsedTime;
     const dt = Math.min(dtRaw, 0.1);
     const k = roam.fast ? 3 : 1;
+    const snap = followSnap(sync, "boss");
+    if (snap) {
+      // theo máy chủ: Meo đi đâu thì mọi máy thấy y vậy
+      Object.assign(S, { init: false, node: { kind: "out", x: 0, z: 5.8 }, target: null, route: null, phase: "idle", held: null, kind: null, faceTo: null });
+      const v = followFrame(grp, C, view.current, snap, "boss", sync, dt, 1.7 * k);
+      applyFx(grp, fx.current?.["boss"], v.h);
+      onPos("boss", { x: v.x, z: v.z, desk: false, moving: snap[3] === 1, name: "Meo" });
+      onActivity(sync.inbox.current?.ba ?? "");
+      return;
+    }
+    view.current.init = false;
     if (!S.init) {
       S.init = true;
       S.nextAt = now + rand(2, 6) / k;
@@ -811,6 +903,7 @@ function BossActor({
       C.sit = false;
       C.pose = S.kind === "chat" || S.kind === "visit" ? "talk" : null;
     }
+    publish(sync, "boss", x, z, S.heading, C);
   });
 
   return (
@@ -932,7 +1025,19 @@ export default function Office3D({
   meIds,
   costumes,
   guests,
+  host = true,
+  inbox,
+  onWorldOut,
+  resync = 0,
 }: {
+  /** true = máy này chạy mô phỏng đi lại (máy chủ hoặc chạy một mình); false = đi theo vị trí máy chủ gửi tới. */
+  host?: boolean;
+  /** Vị trí mới nhất do máy chủ gửi (chỉ dùng khi host = false). */
+  inbox: React.RefObject<WorldInbox | null>;
+  /** Máy chủ gọi mỗi ~0,5 giây để gửi vị trí đã đổi cho các máy khác. */
+  onWorldOut?: (m: { full: boolean; a: Record<string, Snap>; ba: string }) => void;
+  /** Tăng lên khi có người mới vào → máy chủ gửi lại toàn bộ ngay. */
+  resync?: number;
   states: States;
   selected: AgentId | null;
   onSelect: (id: AgentId | null) => void;
@@ -975,6 +1080,52 @@ export default function Office3D({
   });
 
   const bias = useRef<{ id: LoungeId; until: number } | null>(null);
+
+  // --- đồng bộ nhiều người xem (xem chú thích ở WorldInbox)
+  const hostRef = useRef(host);
+  const outRef = useRef<Record<string, Snap>>({});
+  const sync = useMemo<Sync>(() => ({ host: hostRef, inbox, out: outRef }), [inbox]);
+  const lastSent = useRef<Record<string, string>>({});
+  const lastFull = useRef(0);
+  const lastAny = useRef(0);
+  const bossActivity = useRef("");
+  useEffect(() => {
+    hostRef.current = host;
+    // đổi vai (chủ ↔ theo dõi): bỏ chỗ đã giữ ở khu nghỉ, gửi lại từ đầu
+    for (const l of LOUNGES) occupancy.current[l.id] = l.spots.map(() => false);
+    bias.current = null;
+    lastSent.current = {};
+    lastFull.current = 0;
+  }, [host]);
+  useEffect(() => {
+    lastSent.current = {};
+    lastFull.current = 0;
+  }, [resync]);
+  useEffect(() => {
+    if (!onWorldOut) return;
+    const id = setInterval(() => {
+      if (!hostRef.current) return;
+      const now = Date.now();
+      const full = now - lastFull.current > 4000;
+      const a: Record<string, Snap> = {};
+      let n = 0;
+      for (const [key, s] of Object.entries(outRef.current)) {
+        const sig = s.join("|");
+        if (full || lastSent.current[key] !== sig) {
+          a[key] = s;
+          lastSent.current[key] = sig;
+          n++;
+        }
+      }
+      if (n > 0 || now - lastAny.current > 2500) {
+        lastAny.current = now;
+        if (full) lastFull.current = now;
+        onWorldOut({ full, a, ba: bossActivity.current });
+      }
+    }, 500);
+    return () => clearInterval(id);
+  }, [onWorldOut]);
+
   const roam = useMemo<Roam>(
     () => ({
       pickFor: (now) => (bias.current && now < bias.current.until && Math.random() < 0.6 ? bias.current.id : pickLounge(vnHour(opts.hour), Math.random)),
@@ -1026,7 +1177,6 @@ export default function Office3D({
   }, [fxEvents]);
   // --- bang chủ Meo: gọi nhân viên lại trao đổi, hoạt động hiện tại
   const bossCtl = useRef<BossCtl>({ key: 0, until: 0, px: 0, pz: 0, spots: {} });
-  const bossActivity = useRef("");
   const onSummon = useCallback((spots: BossCtl["spots"], until: number, px: number, pz: number) => {
     bossCtl.current = { key: bossCtl.current.key + 1, until, px, pz, spots };
   }, []);
@@ -1110,13 +1260,13 @@ export default function Office3D({
           <Station key={a.id} meta={a} st={states[a.id]} selected={selected === a.id} boss={a.id === "commander"} />
         ))}
         {AGENTS.map((a) => (
-          <Agent key={a.id} meta={a} st={states[a.id]} onSelect={onSelect} roam={roam} locked={!!maint[a.dept]} />
+          <Agent key={a.id} meta={a} st={states[a.id]} onSelect={onSelect} roam={roam} locked={!!maint[a.dept]} sync={sync} />
         ))}
         {AGENTS.filter((a) => a.id !== "commander" && states[a.id].startedAt && states[a.id].status !== "idle").map((a) => (
           <Parcel key={`${a.id}-${states[a.id].startedAt}`} meta={a} startedAt={states[a.id].startedAt!} />
         ))}
         {crew.map((s) => (
-          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} fx={fxMap} costume={costumes[s.id]} />
+          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} fx={fxMap} costume={costumes[s.id]} sync={sync} />
         ))}
         <BossActor
           roam={roam}
@@ -1128,6 +1278,7 @@ export default function Office3D({
           onClick={() => onBossClick(bossActivity.current)}
           fx={fxMap}
           costume={costumes["boss"]}
+          sync={sync}
         />
         <StaffProjector get={getPos} onProject={onProject} />
         <OrbitControls makeDefault enableDamping minZoom={8} maxZoom={90} maxPolarAngle={Math.PI / 2.2} target={[2, 0.8, 4]} />

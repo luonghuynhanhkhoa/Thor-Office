@@ -77,3 +77,9 @@ Logo: `node scripts/make-logo.cjs` (cắt từ `../Thor/logo-tho.jpg`).
 ## Ý định phát triển tiếp (chưa làm)
 
 Nối AI thật (API key hoặc Claude Code) · lưu lịch sử công việc ra file (hiện mất khi khởi động lại) · cho AI hành động ghi (hiện chỉ đọc).
+
+## Đồng bộ + Chat + Trang phục (bản mạng)
+- **Đồng bộ nhân vật**: người vào sớm nhất (ưu tiên tab đang mở) làm *máy chủ* chạy mô phỏng đi lại, gửi vị trí ~2 lần/giây qua kênh Realtime; các máy khác đi theo (nội suy mượt). Chạy một mình thì tự mô phỏng như cũ. Máy chủ rời đi → người kế tiếp tự lên thay.
+- **Chat** (`/api/chat`): tab *Thế giới* ai cũng thấy; *chat riêng* chỉ 2 người trong cuộc + Admin (tab "Giám sát"). Tin đi qua máy chủ (đóng dấu tên người gửi), kênh nhận là mã HMAC khó đoán. Tin KHÔNG lưu — chỉ người đang mở văn phòng mới nhận. Nút 🎤 nhập bằng giọng nói tiếng Việt (Chrome/Edge).
+- **Trang phục**: nút "👗 Trang phục"; xem trước ở `/costumes`. Lưu theo trình duyệt (localStorage).
+- Lưu ý giới hạn Supabase Free: ~2 triệu tin Realtime/tháng (vị trí + chat đều tính).
