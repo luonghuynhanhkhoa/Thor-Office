@@ -1,23 +1,23 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { AUTH_COOKIE, gate, safeEqual, tokenFor } from "@/lib/auth";
+import { SESSION_COOKIE, authMode, readSession } from "@/lib/session";
 
-/** Cổng mật khẩu (xem lib/auth.ts). Chạy trên máy anh không đặt mật khẩu thì không chặn gì. */
+/**
+ * Cổng đăng nhập: chạy trên máy anh (không Vercel) thì mở như cũ; bản trên mạng bắt buộc có phiên hợp lệ
+ * (đăng nhập bằng tài khoản Thor). Quyền chi tiết (ai xem được gì) do từng API kiểm tra lại ở máy chủ.
+ */
 export async function proxy(request: NextRequest) {
-  const g = gate();
-  if (g.mode === "open") return NextResponse.next();
+  const mode = authMode();
+  if (mode === "open") return NextResponse.next();
 
   const path = request.nextUrl.pathname;
-  if (path === "/login" || path === "/api/login") return NextResponse.next();
+  if (path === "/login" || path === "/api/login" || path === "/api/logout") return NextResponse.next();
 
   const isApi = path.startsWith("/api/");
-  if (g.mode === "locked") {
-    return isApi
-      ? NextResponse.json({ error: "Bản trên mạng đang khoá: chưa đặt OFFICE_PASSWORD" }, { status: 503 })
-      : NextResponse.redirect(new URL("/login", request.url));
+  if (mode === "locked") {
+    return isApi ? NextResponse.json({ error: "Bản trên mạng đang khoá: chưa cấu hình khoá Thor" }, { status: 503 }) : NextResponse.redirect(new URL("/login", request.url));
   }
-
-  const cookie = request.cookies.get(AUTH_COOKIE)?.value ?? "";
-  if (cookie && safeEqual(cookie, await tokenFor(g.password))) return NextResponse.next();
+  const s = await readSession(request.cookies.get(SESSION_COOKIE)?.value);
+  if (s) return NextResponse.next();
   return isApi ? NextResponse.json({ error: "Cần đăng nhập" }, { status: 401 }) : NextResponse.redirect(new URL("/login", request.url));
 }
 

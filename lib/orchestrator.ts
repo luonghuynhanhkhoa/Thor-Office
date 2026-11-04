@@ -2,12 +2,14 @@ import { AGENTS, AGENT_BY_ID, DEPT_BY_ID, type AgentId, type AgentState, type Jo
 import { LOGIC, WORKERS, planByKeywords } from "@/lib/agentLogic";
 import { askModel, runnerMode } from "@/lib/runner";
 import { Ctx } from "@/lib/thorData";
+import type { Session } from "@/lib/session";
+import { allStaff } from "@/lib/queries";
 import { norm } from "@/lib/logicTypes";
 import { localAvailable } from "@/lib/thorFiles";
 import { matchDirect, focusLines, NO_MATCH } from "@/lib/answers";
 
 const OVERALL = /tong quan|tat ca|toan bo|toan cong ty/;
-import { detectTopics, resolvePeople } from "@/lib/lookup";
+import { detectTopics, findPeople, resolvePeople } from "@/lib/lookup";
 import { lookupText } from "@/lib/lookup";
 
 /** AI phụ trách truy xuất từng vai trò (AI "Quản lý" của phòng tương ứng). */
@@ -42,7 +44,7 @@ function blankAgents(): Record<AgentId, AgentState> {
   >;
 }
 
-export function startJob(request: string): Job {
+export function startJob(request: string, viewer?: Session): Job {
   const id = Math.random().toString(36).slice(2, 10);
   const job: Job = {
     id,
@@ -60,7 +62,7 @@ export function startJob(request: string): Job {
     const oldest = [...jobs.values()].sort((a, b) => a.createdAt - b.createdAt)[0];
     jobs.delete(oldest.id);
   }
-  void run(job).catch((e) => {
+  void run(job, viewer).catch((e) => {
     job.phase = "error";
     log(job, undefined, `Lỗi: ${(e as Error).message}`);
   });
@@ -148,13 +150,58 @@ async function runWorker(job: Job, ctx: Ctx, agent: AgentId, task: string): Prom
   }
 }
 
-async function run(job: Job): Promise<void> {
+const DENIED =
+  "## 🔒 Yêu Cầu Quyền Truy Cập\n" +
+  "Tài khoản của anh/chị chỉ xem được **thông tin của chính mình**. Em không thể trả lời về người khác, phòng ban khác hay số liệu chung của công ty.\n" +
+  "Anh/chị thử hỏi: **“Ca hôm nay của tôi”**, **“Lương của tôi”**, **“Tôi còn mấy ca chưa xử lý”**, **“Đơn hôm nay của tôi”**.";
+
+/** Trả lời cho người dùng thường: chỉ dữ liệu của CHÍNH họ (lib/lookup.ts), mọi yêu cầu vượt quyền bị từ chối. */
+async function runSelf(job: Job, ctx: Ctx, viewer: Session): Promise<void> {
+  const q = norm(job.request);
+  const selfWord = /(^| )(toi|minh|cua toi|cua minh|ban than)( |$)/.test(q);
+  const roster = await allStaff(ctx).catch(() => []);
+  const others = findPeople(job.request, roster).filter((p) => !viewer.staffIds.includes(p.id));
+  const wide = /nhan su|ke toan|(^| )phong |kiem soat|dieu hanh|toan cong ty|tong quan|tat ca|toan bo|bao cao/.test(q);
+  const company = !!matchDirect(job.request) || planByKeywords(job.request).length > 0;
+  if (others.length || wide || (company && !selfWord)) {
+    set(job, "commander", { status: "done", task: "Từ chối: vượt quyền", finishedAt: Date.now() });
+    log(job, "commander", "Yêu cầu vượt quyền của người dùng này.");
+    job.final = DENIED;
+    job.phase = "done";
+    return;
+  }
+  const mine = roster.filter((s) => viewer.staffIds.includes(s.id));
+  const agent = mine[0] ? LEAD[mine[0].role] : "reader_manage";
+  job.plan = [{ agent, task: "Thông tin của chính mình" }];
+  set(job, "commander", { status: "done", task: "Giao tra cứu thông tin của chính mình", finishedAt: Date.now() });
+  job.phase = "working";
+  set(job, agent, { status: "working", task: "Thông tin của chính mình", startedAt: Date.now() });
+  await sleep(jitter(700, 1300));
+  const topics = detectTopics(job.request);
+  const texts = mine.length ? await Promise.all(mine.map((p) => lookupText(ctx, p, topics))) : [];
+  set(job, agent, { status: "done", result: texts.join("\n\n"), finishedAt: Date.now() });
+  job.phase = "composing";
+  set(job, "reporter", { status: "working", task: "Đang gửi kết quả…", startedAt: Date.now() });
+  await sleep(jitter(400, 800));
+  const useful = texts.filter((t) => t.trim());
+  job.final = useful.length ? useful.join("\n\n---\n\n") : "## Thông tin của tôi\n- Chưa có thông tin cho mục được hỏi, hoặc tài khoản chưa gắn với nhân sự trong Thor.";
+  set(job, "reporter", { status: "done", task: "Đã gửi kết quả", finishedAt: Date.now() });
+  job.phase = "done";
+}
+
+async function run(job: Job, viewer?: Session): Promise<void> {
   const ctx = new Ctx();
 
   // 1) Chỉ huy chia việc
   set(job, "commander", { status: "thinking", task: "Đang phân việc…", startedAt: Date.now() });
   log(job, "commander", `Nhận yêu cầu: "${job.request}"`);
   if (job.runner === "sim") await sleep(jitter(1200, 2000));
+
+  // Người dùng thường (Reader/Saler/QC): CHỈ được hỏi về chính mình — chặn hỏi người khác, phòng khác, tổng quan.
+  if (viewer && !viewer.admin) {
+    await runSelf(job, ctx, viewer);
+    return;
+  }
 
   // 0) Yêu cầu nhắc TÊN một người (Reader/Saler/QC) → chỉ truy xuất ĐÚNG người đó, đúng chủ đề được hỏi — không báo cáo tổng thể.
   const people = await resolvePeople(ctx, job.request);

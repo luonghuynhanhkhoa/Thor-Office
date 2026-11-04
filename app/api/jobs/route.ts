@@ -1,8 +1,11 @@
 import { connection } from "next/server";
 import { listJobs, startJob } from "@/lib/orchestrator";
+import { adminOnly, deny, getViewer } from "@/lib/viewer";
 
 export async function GET() {
   await connection();
+  const [, blocked] = await adminOnly();
+  if (blocked) return blocked;
   return Response.json({ jobs: listJobs() });
 }
 
@@ -12,10 +15,12 @@ export async function GET() {
  */
 export async function POST(request: Request) {
   await connection();
+  const viewer = await getViewer();
+  if (!viewer) return deny(401, "Cần đăng nhập");
   const body = (await request.json().catch(() => null)) as { request?: string } | null;
   const text = body?.request?.trim();
   if (!text) return Response.json({ error: "Thiếu nội dung yêu cầu" }, { status: 400 });
-  const job = startJob(text.slice(0, 500));
+  const job = startJob(text.slice(0, 500), viewer);
 
   const enc = new TextEncoder();
   let closed = false;

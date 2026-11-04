@@ -28,7 +28,7 @@ const ALLOWED = new Set([
   "activity_log",
 ]);
 
-type Env = { url: string; key: string };
+type Env = { url: string; key: string; pub?: string };
 let cached: Env | null | undefined;
 
 function envPath(): string {
@@ -47,7 +47,7 @@ function loadEnv(): Env | null {
   const envKey = process.env.THOR_SUPABASE_SERVICE_KEY;
   if (envUrl && envKey) {
     // Khoá "publishable" (công khai) bị luật bảo mật của Supabase chặn → đọc ra rỗng. Coi như CHƯA nối để huy hiệu báo đúng.
-    cached = envKey.trim().startsWith("sb_publishable_") ? null : { url: envUrl.trim(), key: envKey.trim() };
+    cached = envKey.trim().startsWith("sb_publishable_") ? null : { url: envUrl.trim(), key: envKey.trim(), pub: process.env.THOR_SUPABASE_PUBLISHABLE_KEY?.trim() || undefined };
     return cached;
   }
   try {
@@ -63,7 +63,7 @@ function loadEnv(): Env | null {
     }
     const url = map.NEXT_PUBLIC_SUPABASE_URL;
     const key = map.SUPABASE_SERVICE_ROLE_KEY;
-    cached = url && key ? { url, key } : null;
+    cached = url && key ? { url, key, pub: map.NEXT_PUBLIC_SUPABASE_ANON_KEY || undefined } : null;
   } catch {
     cached = null;
   }
@@ -187,4 +187,24 @@ export async function diagnose(): Promise<Record<string, unknown>> {
     }
   }
   return { connected: true, host, keyKind: kind, keyLength: env.key.length, coKhoangTrang: hadSpace, results };
+}
+
+/** Địa chỉ + khoá CÔNG KHAI (publishable) của Thor để trình duyệt nối kênh thời gian thực (gọi họp, chọc/đấm/icon). Không có → tính năng đó tắt. */
+export function thorPublic(): { url: string; key: string } | null {
+  const e = loadEnv();
+  return e?.pub ? { url: e.url, key: e.pub } : null;
+}
+
+/** Kiểm tra email + mật khẩu bằng Supabase Auth của Thor. Chỉ lấy mã người dùng, KHÔNG giữ token. Sai → null. */
+export async function passwordLogin(email: string, password: string): Promise<{ id: string; email: string } | null> {
+  const env = needEnv();
+  const res = await fetch(`${env.url}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: { apikey: env.pub ?? env.key, "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const j = (await res.json()) as { user?: { id?: string; email?: string } };
+  return j.user?.id ? { id: j.user.id, email: j.user.email ?? email } : null;
 }

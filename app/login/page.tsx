@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 export default function LoginPage() {
-  const [mode, setMode] = useState<"open" | "locked" | "password" | null>(null);
+  const [mode, setMode] = useState<"open" | "locked" | "login" | null>(null);
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -14,8 +15,8 @@ export default function LoginPage() {
   useEffect(() => {
     fetch("/api/login")
       .then((r) => r.json())
-      .then((d: { mode: "open" | "locked" | "password" }) => setMode(d.mode))
-      .catch(() => setMode("password"));
+      .then((d: { mode: "open" | "locked" | "login" }) => setMode(d.mode))
+      .catch(() => setMode("login"));
   }, []);
 
   async function submit(e: React.FormEvent) {
@@ -23,7 +24,7 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
+      const res = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
       const data = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) throw new Error(data.error ?? "Không đăng nhập được");
       router.replace("/");
@@ -40,19 +41,27 @@ export default function LoginPage() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo-tho-dark.png" alt="Thỏ" className="mx-auto mb-3 h-20 w-auto" />
         <h1 className="mb-1 text-center text-lg font-extrabold text-slate-900">Văn phòng AI · Thor</h1>
+        <p className="mb-3 text-center text-xs text-slate-500">Đăng nhập bằng tài khoản Thor của anh/chị</p>
         {mode === "locked" ? (
-          <p className="text-center text-sm text-red-600">
-            Bản trên mạng đang <b>khoá</b>: chưa đặt mật khẩu (biến môi trường <code>OFFICE_PASSWORD</code> trên Vercel).
-          </p>
+          <p className="text-center text-sm text-red-600">Bản trên mạng đang <b>khoá</b>: chưa cấu hình khoá kết nối Thor trên Vercel.</p>
         ) : mode === "open" ? (
           <Link href="/" className="mt-3 block rounded-xl bg-violet-500 py-2 text-center text-sm font-bold text-white">
             Vào văn phòng
           </Link>
         ) : (
-          <form onSubmit={submit} className="mt-3 space-y-3">
+          <form onSubmit={submit} className="space-y-3">
+            <input
+              type="email"
+              autoFocus
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email Thor"
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-violet-400 focus:outline-none"
+            />
             <input
               type="password"
-              autoFocus
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Mật khẩu"
@@ -61,7 +70,7 @@ export default function LoginPage() {
             {error && <div className="text-center text-xs text-red-600">{error}</div>}
             <button
               type="submit"
-              disabled={busy || !password}
+              disabled={busy || !email || !password}
               className="w-full rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 py-2 text-sm font-bold text-white disabled:opacity-40"
             >
               {busy ? "Đang kiểm tra…" : "Vào văn phòng"}

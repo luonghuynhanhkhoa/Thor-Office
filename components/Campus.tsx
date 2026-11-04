@@ -101,12 +101,45 @@ function redrawTv(c: HTMLCanvasElement, tex: THREE.Texture, name: string, color:
   tex.needsUpdate = true;
 }
 
-function Tv({ d, data, states, onClick, scale = 1 }: { d: DeptMeta; data: TvLine[] | null; states: States; onClick: (id: DeptId) => void; scale?: number }) {
+/** Màn hình khoá: hiện "YÊU CẦU QUYỀN TRUY CẬP" thay cho số liệu (dành cho người không phải admin). */
+function drawLock(c: HTMLCanvasElement, title: string, color: string) {
+  const x = c.getContext("2d");
+  if (!x) return;
+  const W = c.width;
+  const H = c.height;
+  x.fillStyle = "#0b1226";
+  x.fillRect(0, 0, W, H);
+  x.fillStyle = color;
+  x.fillRect(0, 0, W, Math.round(H * 0.15));
+  x.fillStyle = "#0b1226";
+  x.textBaseline = "middle";
+  x.textAlign = "left";
+  x.font = `bold ${Math.round(H * 0.095)}px "Segoe UI", Arial, sans-serif`;
+  x.fillText(title.toUpperCase(), 24, H * 0.075);
+  x.textAlign = "center";
+  x.font = `${Math.round(H * 0.28)}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+  x.fillText("🔒", W / 2, H * 0.47);
+  x.fillStyle = "#fca5a5";
+  x.font = `bold ${Math.round(H * 0.095)}px "Segoe UI", Arial, sans-serif`;
+  x.fillText("YÊU CẦU QUYỀN TRUY CẬP", W / 2, H * 0.72);
+  x.fillStyle = "#94a3b8";
+  x.font = `${Math.round(H * 0.058)}px "Segoe UI", Arial, sans-serif`;
+  x.fillText("Chỉ quản trị (Admin) xem được màn hình này", W / 2, H * 0.84);
+}
+
+function Tv({ d, data, states, onClick, scale = 1, locked = false }: { d: DeptMeta; data: TvLine[] | null; states: States; onClick: (id: DeptId) => void; scale?: number; locked?: boolean }) {
   const [{ canvas, tex }] = useState(makeTvTexture);
   const last = useRef("");
   const chips = useMemo(() => AGENTS.filter((a) => a.dept === d.id).map((a) => ({ n: a.name, s: states[a.id].status })), [d.id, states]);
 
   useFrame(({ clock }) => {
+    if (locked) {
+      if (last.current === "locked") return;
+      last.current = "locked";
+      drawLock(canvas, d.name, d.color);
+      refreshTexture(tex);
+      return;
+    }
     const blink = Math.floor(clock.elapsedTime) % 2 === 0;
     const sig = `${blink}|${JSON.stringify(data)}|${chips.map((c) => c.s).join()}`;
     if (sig === last.current) return;
@@ -263,7 +296,7 @@ function HqDecor({ d }: { d: DeptMeta }) {
   );
 }
 
-function Zone({ d, active, door, data, states, onTv }: { d: DeptMeta; active: boolean; door: DoorState; data: TvLine[] | null; states: States; onTv: (id: DeptId) => void }) {
+function Zone({ d, active, door, data, states, onTv, locked = false }: { d: DeptMeta; active: boolean; door: DoorState; data: TvLine[] | null; states: States; onTv: (id: DeptId) => void; locked?: boolean }) {
   const [cx, cz] = d.center;
   const [W, D] = d.size;
   const special = d.id === "hq";
@@ -286,7 +319,7 @@ function Zone({ d, active, door, data, states, onTv }: { d: DeptMeta; active: bo
       <B p={[cx, 2.62, cz - D / 2 + 0.01]} s={[W + 0.02, 0.08, 0.14]} c={d.color} emissive={d.color} ei={active ? 1.6 : 0.8} />
       <B p={[cx - W / 2, 1.3, cz]} s={[0.05, 2.6, D]} c="#cfe6ff" op={0.22} rough={0.1} />
       <B p={[cx - W / 2, 1.3, cz + D / 2]} s={[0.1, 2.6, 0.1]} c="#f5f7fb" metal={0.5} rough={0.3} />
-      <Tv d={d} data={data} states={states} onClick={onTv} scale={special ? 1.2 : 1} />
+      <Tv d={d} data={data} states={states} onClick={onTv} scale={special ? 1.2 : 1} locked={locked} />
       <Door cx={cx} cz={cz} depth={D} state={door} />
       <Partitions cx={cx} cz={cz} W={W} D={D} color={d.color} />
       {special && (
@@ -909,6 +942,7 @@ function refreshTexture(tex: THREE.Texture) {
 function ShiftBoard({
   room,
   kind,
+  locked = false,
   offsetX = 0,
   list,
   sales,
@@ -917,6 +951,7 @@ function ShiftBoard({
 }: {
   room: (typeof WORKROOMS)[number];
   kind: BoardKind;
+  locked?: boolean;
   offsetX?: number;
   list: DutyStaff[];
   sales: SalesToday | null;
@@ -934,6 +969,13 @@ function ShiftBoard({
   });
   const last = useRef("");
   useFrame(() => {
+    if (locked) {
+      if (last.current === "locked") return;
+      last.current = "locked";
+      drawLock(canvas, kind === "sales" ? "Bán hàng hôm nay · Saler" : kind === "cases" ? "Ca đang xử lý · Reader" : "Ca trực hôm nay · Reader", room.color);
+      refreshTexture(tex);
+      return;
+    }
     const sig = JSON.stringify(kind === "sales" ? [list, sales] : kind === "cases" ? [list.map((s) => s.id), cases] : list);
     if (sig === last.current) return;
     last.current = sig;
@@ -958,7 +1000,7 @@ function ShiftBoard({
   );
 }
 /** Phòng làm việc của Reader / Saler: bàn có vách ngăn từng chỗ, vách ngắn quanh phòng; nhân viên đang trực ngồi ở đây. */
-export function WorkRooms({ occupied, board, sales, cases, onBoard }: { occupied: Record<StaffRole, boolean[]>; board: DutyStaff[]; sales: SalesToday | null; cases: CasesToday | null; onBoard: (k: BoardKind) => void }) {
+export function WorkRooms({ occupied, board, sales, cases, onBoard, locked = false }: { occupied: Record<StaffRole, boolean[]>; board: DutyStaff[]; sales: SalesToday | null; cases: CasesToday | null; onBoard: (k: BoardKind) => void; locked?: boolean }) {
   return (
     <>
       {WORKROOMS.map((r) => {
@@ -988,11 +1030,11 @@ export function WorkRooms({ occupied, board, sales, cases, onBoard }: { occupied
             <Partitions cx={cx} cz={cz} W={W} D={D} color={r.color} />
             {r.id === "reader" ? (
               <>
-                <ShiftBoard room={r} kind="shift" offsetX={-3.2} list={board.filter((s) => s.role === "reader")} sales={sales} cases={cases} onClick={onBoard} />
-                <ShiftBoard room={r} kind="cases" offsetX={3.2} list={board.filter((s) => s.role === "reader")} sales={sales} cases={cases} onClick={onBoard} />
+                <ShiftBoard room={r} locked={locked} kind="shift" offsetX={-3.2} list={board.filter((s) => s.role === "reader")} sales={sales} cases={cases} onClick={onBoard} />
+                <ShiftBoard room={r} locked={locked} kind="cases" offsetX={3.2} list={board.filter((s) => s.role === "reader")} sales={sales} cases={cases} onClick={onBoard} />
               </>
             ) : (
-              <ShiftBoard room={r} kind="sales" list={board.filter((s) => s.role === "saler")} sales={sales} cases={cases} onClick={onBoard} />
+              <ShiftBoard room={r} locked={locked} kind="sales" list={board.filter((s) => s.role === "saler")} sales={sales} cases={cases} onClick={onBoard} />
             )}
             {r.desks.map((d, i) => (
               <DeskUnit key={i} x={d.x} z={d.z} color={r.color} on={!!occupied[r.id][i]} />

@@ -31,6 +31,13 @@ Thử nhanh: `?hour=8` (ép giờ trong ngày) và/hoặc `?fast=1` (AI đi lạ
 - AI rảnh tự **tìm đường (A\*)** quanh các công trình tới khu nghỉ/họp theo giờ VN (sáng cà phê/ăn sáng, 9–10h30 họp đầu ngày, trưa ăn rồi nghỉ, 14–15h30 họp nhanh, chiều tập gym) và về bàn ngay khi có việc.
 - Bên trái có **ghi chú màu** theo phòng ban/nhiệm vụ + ý nghĩa đèn cửa; trong cảnh không có nhãn tên phòng hay nhãn từng AI cho đỡ rối. Bấm từng AI = xem việc của AI đó.
 
+## Người dùng, quyền, gọi họp, chọc/đấm
+
+- **Đăng nhập bằng tài khoản Thor** (bản trên mạng): admin xem mọi thứ; Reader/Saler/QC chỉ thấy thông tin chính của mình — Tivi/bảng/người khác hiện "🔒 Yêu Cầu Quyền Truy Cập", câu hỏi về người khác bị từ chối (quyền kiểm ở máy chủ, xem `lib/session.ts`, `lib/viewer.ts`). Chạy trên máy anh = chủ máy, quyền admin.
+- **Phòng họp gọi audio/video** (WebRTC nhiều người, tín hiệu qua kênh thời gian thực Supabase): `lib/realtimeClient.ts`, `components/MeetingPanel.tsx`.
+- **Chọc / đấm / lêu lêu / cười / thả tim** tới mọi nhân vật (kể cả Meo): nhân vật phản ứng + bong bóng icon, mọi người đều thấy.
+- Chi tiết cấu hình + biến môi trường: `DEPLOY-VERCEL.md`.
+
 ## Chạm vào nhân vật + Meo bang chủ
 
 - **Chạm vào một nhân viên** (nhân vật hoặc nhãn tên) → thẻ gọn: giờ trực hôm nay · số ca hôm nay (Reader: ca/đơn Sale giao; Saler: khách/đơn/doanh thu) · còn mấy ca chưa xử lý (Reader: số ca đang đợi + giờ; Saler: đơn chưa gán Reader) · lương tạm tính tháng. API `/api/person?id=…`, mã `lib/lookup.ts` (`personCard`).

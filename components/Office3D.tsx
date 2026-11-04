@@ -36,6 +36,7 @@ import {
   type StaffRole,
 } from "@/lib/layout";
 import type { TvData } from "@/lib/tv";
+import { FX_INFO, type FxEvent, type FxKind } from "@/lib/realtimeClient";
 import { staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
 import { Buildings, Hall, LogoSigns, WorkRooms, Zone, type DoorState } from "@/components/Campus";
 import { B } from "@/components/sceneKit";
@@ -398,6 +399,37 @@ type StaffSim = {
   attending: boolean;
 };
 
+/** Hiệu ứng chọc/đấm/icon đang chạy trên từng nhân vật (khoá = mã nhân viên, "boss" = Meo). */
+type FxMap = Record<string, { kind: FxKind; t: number }>;
+
+/** Làm nhân vật phản ứng với chọc/đấm/icon (chạy sau khi đã đặt vị trí + hướng). */
+function applyFx(grp: THREE.Group, f: { kind: FxKind; t: number } | undefined, heading: number) {
+  grp.rotation.order = "YXZ";
+  if (!f) {
+    grp.rotation.x = 0;
+    grp.rotation.z = 0;
+    return;
+  }
+  const p = (Date.now() - f.t) / 1600;
+  if (p >= 1) {
+    grp.rotation.x = 0;
+    grp.rotation.z = 0;
+    return;
+  }
+  if (f.kind === "punch") {
+    const hit = p < 0.25 ? p / 0.25 : 1 - (p - 0.25) / 0.75; // ngã ra sau rồi đứng dậy
+    grp.rotation.x = -0.9 * hit;
+    grp.position.x -= Math.sin(heading) * 0.55 * hit;
+    grp.position.z -= Math.cos(heading) * 0.55 * hit;
+    grp.rotation.y += Math.sin(p * 26) * 0.35 * (1 - p); // choáng
+  } else if (f.kind === "poke") {
+    grp.position.y += 0.18 * Math.abs(Math.sin(p * Math.PI * 3)) * (1 - p);
+    grp.rotation.z = Math.sin(p * 30) * 0.12 * (1 - p);
+  } else {
+    grp.position.y += 0.1 * Math.abs(Math.sin(p * Math.PI * 4)) * (1 - p);
+  }
+}
+
 /** Vùng bấm vô hình quanh người (to hơn thân người cho dễ chạm). */
 function HitBox() {
   return (
@@ -420,6 +452,7 @@ function StaffActor({
   onPos,
   boss,
   onClick,
+  fx,
 }: {
   staff: DutyStaff;
   deskIdx: number | null;
@@ -427,6 +460,7 @@ function StaffActor({
   onPos: (id: string, info: PosInfo) => void;
   boss: React.RefObject<BossCtl>;
   onClick: (id: string) => void;
+  fx: React.RefObject<FxMap>;
 }) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "walk", pose: null, sit: false, status: "idle" });
@@ -536,6 +570,7 @@ function StaffActor({
     S.heading = lerpAngle(S.heading, target, Math.min(1, dt * 8));
     grp.position.set(x, 0, z);
     grp.rotation.y = S.heading;
+    applyFx(grp, fx.current?.[staff.id], S.heading);
     onPos(staff.id, { x, z, desk: S.node.kind === "desk" && S.phase === "idle", moving: S.phase === "moving", name: staff.name });
 
     if (S.phase === "moving") {
@@ -600,6 +635,7 @@ function BossActor({
   onActivity,
   onPos,
   onClick,
+  fx,
 }: {
   roam: Roam;
   getPos: () => Record<string, PosInfo>;
@@ -608,6 +644,7 @@ function BossActor({
   onActivity: (text: string) => void;
   onPos: (id: string, info: PosInfo) => void;
   onClick: () => void;
+  fx: React.RefObject<FxMap>;
 }) {
   const g = useRef<THREE.Group>(null);
   const ctl = useRef<Ctl>({ mode: "spot", pose: null, sit: false, status: "idle" });
@@ -744,6 +781,7 @@ function BossActor({
     S.heading = lerpAngle(S.heading, target, Math.min(1, dt * 8));
     grp.position.set(x, 0, z);
     grp.rotation.y = S.heading;
+    applyFx(grp, fx.current?.["boss"], S.heading);
     onPos("boss", { x, z, desk: false, moving: S.phase === "moving", name: "Meo" });
 
     if (S.phase === "moving") {
@@ -875,6 +913,9 @@ export default function Office3D({
   onBoardClick,
   onStaffClick,
   onBossClick,
+  locked,
+  fxEvents,
+  meIds,
 }: {
   states: States;
   selected: AgentId | null;
@@ -894,6 +935,12 @@ export default function Office3D({
   onStaffClick: (id: string) => void;
   /** Chạm vào Meo bang chủ → xem Meo đang làm gì. */
   onBossClick: (activity: string) => void;
+  /** Người xem không phải admin: Tivi + bảng bị khoá (hiện "Yêu cầu quyền truy cập"). */
+  locked: boolean;
+  /** Các lượt chọc/đấm/icon gần đây (từ kênh thời gian thực). */
+  fxEvents: FxEvent[];
+  /** Mã nhân sự của CHÍNH người đang xem (để gắn nhãn "Bạn"). */
+  meIds: string[];
   /** Phòng nào đang được cấu hình/chỉnh sửa (đèn cửa đỏ nhấp nháy + bảng Work in Process, AI trong phòng ở lại bàn). */
   maint: Partial<Record<DeptId, boolean>>;
 }) {
@@ -949,6 +996,11 @@ export default function Office3D({
     staffPos.current[id] = info;
   }, []);
   const getPos = useCallback(() => staffPos.current, []);
+  // --- chọc / đấm / icon: ghi lại hiệu ứng mới nhất lên từng nhân vật
+  const fxMap = useRef<FxMap>({});
+  useEffect(() => {
+    for (const e of fxEvents) if (Date.now() - e.t < 2000) fxMap.current[e.toId] = { kind: e.kind, t: e.t };
+  }, [fxEvents]);
   // --- bang chủ Meo: gọi nhân viên lại trao đổi, hoạt động hiện tại
   const bossCtl = useRef<BossCtl>({ key: 0, until: 0, px: 0, pz: 0, spots: {} });
   const bossActivity = useRef("");
@@ -972,8 +1024,9 @@ export default function Office3D({
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      for (const id of Object.keys(labelRefs.current)) {
-        const el = labelRefs.current[id];
+      for (const key of Object.keys(labelRefs.current)) {
+        const el = labelRefs.current[key];
+        const id = key.startsWith("fx:") ? key.split(":")[1] : key;
         const p = screen.current[id];
         if (el && p) {
           el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
@@ -1026,9 +1079,9 @@ export default function Office3D({
           <LogoSigns />
         </Suspense>
         <Buildings />
-        <WorkRooms occupied={occupied} board={board} sales={sales} cases={cases} onBoard={onBoardClick} />
+        <WorkRooms occupied={occupied} board={board} sales={sales} cases={cases} onBoard={onBoardClick} locked={locked} />
         {DEPTS.map((d) => (
-          <Zone key={d.id} d={d} active={deptActive(d.id)} door={doorState(d.id)} data={tv ? tv[d.id] : null} states={states} onTv={onTvClick} />
+          <Zone key={d.id} d={d} active={deptActive(d.id)} door={doorState(d.id)} data={tv ? tv[d.id] : null} states={states} onTv={onTvClick} locked={locked} />
         ))}
         {AGENTS.map((a) => (
           <Station key={a.id} meta={a} st={states[a.id]} selected={selected === a.id} boss={a.id === "commander"} />
@@ -1040,7 +1093,7 @@ export default function Office3D({
           <Parcel key={`${a.id}-${states[a.id].startedAt}`} meta={a} startedAt={states[a.id].startedAt!} />
         ))}
         {crew.map((s) => (
-          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} />
+          <StaffActor key={s.id} staff={s} deskIdx={assign.get(s.id) ?? null} roam={roam} onPos={onPos} boss={bossCtl} onClick={onStaffClick} fx={fxMap} />
         ))}
         <BossActor
           roam={roam}
@@ -1050,6 +1103,7 @@ export default function Office3D({
           onActivity={onActivity}
           onPos={onPos}
           onClick={() => onBossClick(bossActivity.current)}
+          fx={fxMap}
         />
         <StaffProjector get={getPos} onProject={onProject} />
         <OrbitControls makeDefault enableDamping minZoom={8} maxZoom={90} maxPolarAngle={Math.PI / 2.2} target={[2, 0.8, 4]} />
@@ -1075,11 +1129,25 @@ export default function Office3D({
             }}
             title={`${s.role === "reader" ? "Reader" : "Saler"} · ${s.from ?? ""}–${s.to ?? ""} · ${s.state === "on" ? "đang trực" : s.state === "break" ? "nghỉ giữa ca" : "chưa tới giờ trực"}`}
             onClick={() => onStaffClick(s.id)}
-            className="pointer-events-auto absolute left-0 top-0 flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border bg-white/90 px-2 py-0.5 text-[10.5px] font-bold text-slate-800 shadow"
+            className={`pointer-events-auto absolute left-0 top-0 flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border bg-white/90 px-2 py-0.5 text-[10.5px] font-bold text-slate-800 shadow ${meIds.includes(s.id) ? "ring-2 ring-violet-500" : ""}`}
             style={{ borderColor: s.role === "reader" ? "#34d399" : "#fb923c", opacity: 0 }}
           >
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: staffLook(s.idx).shirt }} />
-            {s.name}
+            {meIds.includes(s.id) ? `Bạn · ${s.name}` : s.name}
+          </div>
+        ))}
+        {fxEvents.map((e) => (
+          <div
+            key={e.id}
+            ref={(el) => {
+              labelRefs.current[`fx:${e.toId}:${e.id}`] = el;
+            }}
+            className="absolute left-0 top-0"
+            style={{ opacity: 0 }}
+          >
+            <div className="fx-float -translate-y-4 whitespace-nowrap rounded-full bg-white/95 px-2.5 py-1 text-sm font-bold shadow-lg ring-1 ring-slate-200">
+              <span className="text-lg">{FX_INFO[e.kind].emoji}</span> <span className="text-[11px] text-slate-700">{e.fromName}</span>
+            </div>
           </div>
         ))}
       </div>

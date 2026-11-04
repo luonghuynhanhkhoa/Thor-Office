@@ -1,9 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENTS, AGENT_BY_ID, DEPTS, DEPT_BY_ID, type AgentId, type AgentState, type DeptId, type Job } from "@/lib/agentsMeta";
 import { LOUNGES } from "@/lib/layout";
+import { FX_INFO, openFxChannel, type FxEvent, type FxKind, type RtConfig } from "@/lib/realtimeClient";
 import type { TvData } from "@/lib/tv";
 import type { PersonCard } from "@/lib/lookup";
 import { formatDong, staffLook, type BoardKind, type CasesToday, type DutyStaff, type SalesToday } from "@/lib/dutyTypes";
@@ -15,6 +17,26 @@ const Office3D = dynamic(() => import("@/components/Office3D"), {
   ),
 });
 
+const MeetingPanel = dynamic(() => import("@/components/MeetingPanel"), { ssr: false });
+
+type Me = { name: string; admin: boolean; role: string; staffIds: string[]; uid: string };
+
+/** Hàng nút chọc / đấm / icon gửi tới một nhân vật. */
+function FxBar({ target, onSend }: { target: { id: string; name: string }; onSend: (kind: FxKind, toId: string, toName: string) => void }) {
+  return (
+    <div className="mt-3 border-t border-white/10 pt-2">
+      <div className="mb-1 text-[11px] text-slate-400">Tương tác với {target.name}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {(Object.keys(FX_INFO) as FxKind[]).map((k) => (
+          <button key={k} onClick={() => onSend(k, target.id, target.name)} className="rounded-lg bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-white/25">
+            {FX_INFO[k].emoji} {FX_INFO[k].label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 type Status = { runner: "api" | "cli" | "sim"; thorConnected: boolean };
 
 const RUNNER_LABEL: Record<Status["runner"], { text: string; cls: string }> = {
@@ -22,6 +44,8 @@ const RUNNER_LABEL: Record<Status["runner"], { text: string; cls: string }> = {
   cli: { text: "AI thật · Claude Code", cls: "border-emerald-400 text-emerald-700" },
   sim: { text: "Chế độ tự tính (chưa nối AI)", cls: "border-amber-400 text-amber-700" },
 };
+
+const MY_SUGGESTIONS = ["Ca hôm nay của tôi", "Lương của tôi", "Tôi còn mấy ca chưa xử lý", "Đơn hôm nay của tôi", "Giờ trực của tôi"];
 
 const SUGGESTIONS = [
   "Tổng quan toàn công ty",
@@ -97,18 +121,65 @@ export default function Home() {
   const [boardOpen, setBoardOpen] = useState<BoardKind | null>(null);
   const [person, setPerson] = useState<{ loading: boolean; card?: PersonCard; error?: string } | null>(null);
   const [bossInfo, setBossInfo] = useState<string | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [rt, setRt] = useState<RtConfig | null>(null);
+  const [denied, setDenied] = useState<{ id?: string; name?: string; what: string } | null>(null);
+  const [fxEvents, setFxEvents] = useState<FxEvent[]>([]);
+  const [meetOpen, setMeetOpen] = useState(false);
+  const fxSend = useRef<((kind: FxKind, fromName: string, toId: string, toName: string) => void) | null>(null);
+  const admin = !!me?.admin;
+  const router = useRouter();
+  const [tabId, setTabId] = useState(""); // mã riêng mỗi tab (cùng người mở 2 tab vẫn là 2 người trong cuộc gọi)
 
   const closeCards = useCallback(() => {
     setTvOpen(null);
     setBoardOpen(null);
     setPerson(null);
     setBossInfo(null);
+    setDenied(null);
   }, []);
+
+  // Ai đang dùng + quyền (quyền THẬT do máy chủ kiểm tra ở từng API; đây chỉ để giao diện khoá/ẩn cho khớp).
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { user?: Me; realtime?: RtConfig | null } | null) => {
+        if (d?.user) setMe(d.user);
+        if (d?.realtime) setRt(d.realtime);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  // Kênh chọc / đấm / icon (thời gian thực).
+  useEffect(() => {
+    if (!rt) return;
+    const ch = openFxChannel(rt, (e) => setFxEvents((prev) => [...prev.slice(-11), e]));
+    fxSend.current = ch.send;
+    return () => {
+      fxSend.current = null;
+      ch.close();
+    };
+  }, [rt]);
+
+  const sendFx = useCallback(
+    (kind: FxKind, toId: string, toName: string) => {
+      if (!fxSend.current) {
+        setError("Chưa bật được kênh tương tác (thiếu khoá thời gian thực).");
+        return;
+      }
+      fxSend.current(kind, me?.name ?? "Ai đó", toId, toName);
+    },
+    [me]
+  );
 
   // Chạm vào một nhân viên: tải thẻ thông tin gọn (giờ trực · ca hôm nay · lương · ca chưa xử lý).
   const openPerson = useCallback(
     (id: string) => {
       closeCards();
+      if (!admin && !(me?.staffIds ?? []).includes(id)) {
+        setDenied({ id, name: dutyAll.find((s) => s.id === id)?.name, what: "người khác" });
+        return;
+      }
       setPerson({ loading: true });
       fetch(`/api/person?id=${encodeURIComponent(id)}`, { cache: "no-store" })
         .then(async (r) => {
@@ -118,7 +189,7 @@ export default function Home() {
         })
         .catch((e: Error) => setPerson({ loading: false, error: e.message }));
     },
-    [closeCards]
+    [closeCards, admin, me, dutyAll]
   );
   const [sales, setSales] = useState<SalesToday | null>(null);
   const [cases, setCases] = useState<CasesToday | null>(null);
@@ -134,6 +205,7 @@ export default function Home() {
         .then((r) => (r.ok ? (r.json() as Promise<DutyStaff[]>) : []))
         .then((d) => alive && Array.isArray(d) && setDutyAll(d))
         .catch(() => undefined);
+      if (!admin) return; // Tivi/bảng chỉ dành cho admin
       fetch(`/api/cases${demo ? "?demo=1" : ""}`, { cache: "no-store" })
         .then((r) => (r.ok ? (r.json() as Promise<CasesToday>) : null))
         .then((d) => alive && d && setCases(d))
@@ -149,7 +221,7 @@ export default function Home() {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [admin]);
 
   // Phòng đang chỉnh sửa: đọc lúc mở trang, làm mới mỗi 10 giây (Claude hoặc anh có thể bật/tắt).
   useEffect(() => {
@@ -188,8 +260,9 @@ export default function Home() {
       .catch(() => setStatus(null));
   }, []);
 
-  // Số liệu cho Tivi từng phòng: tải lúc mở trang, rồi làm mới mỗi phút.
+  // Số liệu cho Tivi từng phòng (CHỈ admin): tải lúc mở trang, rồi làm mới mỗi phút.
   useEffect(() => {
+    if (!admin) return;
     let alive = true;
     const load = () =>
       fetch("/api/tv", { cache: "no-store" })
@@ -202,7 +275,7 @@ export default function Home() {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [admin]);
 
   const send = useCallback(
     async (text: string) => {
@@ -273,7 +346,8 @@ export default function Home() {
           tv={tv}
           onTvClick={(id) => {
             closeCards();
-            setTvOpen(id);
+            if (admin) setTvOpen(id);
+            else setDenied({ what: `Tivi ${DEPT_BY_ID[id].name}` });
           }}
           maint={maint}
           duty={duty}
@@ -282,13 +356,17 @@ export default function Home() {
           cases={cases}
           onBoardClick={(k) => {
             closeCards();
-            setBoardOpen(k);
+            if (admin) setBoardOpen(k);
+            else setDenied({ what: "bảng số liệu phòng làm việc" });
           }}
           onStaffClick={openPerson}
           onBossClick={(activity) => {
             closeCards();
             setBossInfo(activity || "Đang nghỉ giữa các cuộc gặp");
           }}
+          locked={!admin}
+          fxEvents={fxEvents}
+          meIds={me?.staffIds ?? []}
         />
       </div>
 
@@ -302,6 +380,30 @@ export default function Home() {
           <div className="text-[11px] text-slate-500">7 phòng ban · mỗi AI lo đúng một nhánh việc · bấm Tivi trong phòng để xem số liệu</div>
           </div>
         </div>
+        {me && (
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-violet-300 bg-white/90 px-3 py-1 text-[11px] font-semibold text-violet-700 shadow-sm">
+              👤 {me.name} · {me.admin ? "Admin" : me.role === "reader" ? "Reader" : me.role === "saler" ? "Saler" : me.role === "qc" ? "QC" : me.role}
+            </span>
+            {rt && (
+              <button
+                onClick={() => {
+                  setTabId((v) => v || Math.random().toString(36).slice(2, 7));
+                  setMeetOpen((v) => !v);
+                }} className="rounded-full border border-amber-400 bg-white/90 px-3 py-1 text-[11px] font-bold text-amber-800 shadow-sm hover:bg-amber-50">
+                📞 Phòng họp (gọi video)
+              </button>
+            )}
+            {me.uid !== "local" && (
+              <button
+                onClick={() => void fetch("/api/logout", { method: "POST" }).then(() => router.replace("/login"))}
+                className="rounded-full border border-slate-300 bg-white/90 px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
+              >
+                Đăng xuất
+              </button>
+            )}
+          </div>
+        )}
         {status && (
           <div className="flex flex-wrap gap-2">
             <span className={`rounded-full border bg-white/85 px-3 py-1 text-[11px] font-semibold shadow-sm ${RUNNER_LABEL[status.runner].cls}`}>
@@ -337,7 +439,7 @@ export default function Home() {
                     <div className="text-[12px] font-bold leading-tight text-slate-800">{d.name}</div>
                     <div className="text-[11px] leading-snug text-slate-500">{d.scope}</div>
                   </div>
-                  <button
+                  {admin && <button
                     onClick={() => void toggleMaint(d.id, !maint[d.id])}
                     title={maint[d.id] ? "Đang chỉnh sửa — bấm để mở lại phòng" : "Đánh dấu phòng đang cấu hình/chỉnh sửa"}
                     className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[11px] ${
@@ -345,7 +447,7 @@ export default function Home() {
                     }`}
                   >
                     🛠
-                  </button>
+                  </button>}
                 </li>
               ))}
             </ul>
@@ -379,6 +481,20 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Bảng tin tương tác: ai vừa chọc/đấm/gửi icon cho ai */}
+      {fxEvents.length > 0 && (
+        <div className="pointer-events-none absolute left-1/2 top-4 z-20 flex -translate-x-1/2 flex-col items-center gap-1">
+          {fxEvents.slice(-3).map((e) => (
+            <div key={e.id} className="fx-float rounded-full bg-white/95 px-3 py-1 text-xs font-semibold text-slate-700 shadow-lg ring-1 ring-slate-200">
+              {FX_INFO[e.kind].emoji} {e.fromName} {FX_INFO[e.kind].verb} {e.toName}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Phòng họp: gọi audio/video */}
+      {meetOpen && rt && me && tabId && <MeetingPanel cfg={rt} me={{ id: `${me.uid}-${tabId}`, name: me.name }} onClose={() => setMeetOpen(false)} />}
 
       {/* Tivi phóng to của một phòng */}
       {tvOpen && (
@@ -443,6 +559,23 @@ export default function Home() {
             </ul>
           )}
           <div className="mt-2 text-[11px] text-slate-400">Số liệu hôm nay từ Thor · chạm nhân vật khác để xem người khác</div>
+          {person.card && !(me?.staffIds ?? []).includes(person.card.id) && <FxBar target={{ id: person.card.id, name: person.card.name }} onSend={sendFx} />}
+        </div>
+      )}
+
+      {/* Không đủ quyền: Tivi / bảng / thông tin người khác */}
+      {denied && (
+        <div className="absolute top-4 z-20 w-[min(360px,calc(100vw-2rem))] rounded-2xl border border-red-400/60 bg-[#1b0b0b] p-4 text-white shadow-2xl" style={{ right: panelOpen ? 372 : 16 }}>
+          <div className="-mx-4 -mt-4 mb-3 flex items-center justify-between rounded-t-2xl bg-red-500 px-4 py-2.5 text-white">
+            <div className="text-sm font-extrabold uppercase tracking-wide">🔒 Yêu Cầu Quyền Truy Cập</div>
+            <button onClick={() => setDenied(null)} className="rounded px-2 text-lg leading-none hover:bg-black/20" aria-label="Đóng">
+              ×
+            </button>
+          </div>
+          <div className="text-[13px] leading-snug text-red-100">
+            Anh/chị không có quyền xem <b>{denied.name ? `thông tin của ${denied.name}` : denied.what}</b>. Tài khoản này chỉ xem được thông tin chính của <b>chính mình</b>.
+          </div>
+          {denied.id && <FxBar target={{ id: denied.id, name: denied.name ?? "bạn này" }} onSend={sendFx} />}
         </div>
       )}
 
@@ -458,6 +591,7 @@ export default function Home() {
           <div className="text-[12px] text-amber-200/80">Đang làm</div>
           <div className="text-[15px] font-bold">{bossInfo}</div>
           <div className="mt-2 text-[11px] text-amber-100/60">Meo thường xuyên gặp trao đổi 1–3 nhân viên, ngồi chỉ đạo họp và ăn uống cùng mọi người.</div>
+          <FxBar target={{ id: "boss", name: "Meo" }} onSend={sendFx} />
         </div>
       )}
 
@@ -664,7 +798,7 @@ export default function Home() {
       {/* Thanh giao việc */}
       <div className="absolute inset-x-0 bottom-4 z-10 mx-auto w-[min(720px,calc(100vw-2rem))]">
         <div className="mb-2 flex flex-wrap gap-1.5">
-          {SUGGESTIONS.map((s) => (
+          {(admin ? SUGGESTIONS : MY_SUGGESTIONS).map((s) => (
             <button
               key={s}
               disabled={sending || busy}
