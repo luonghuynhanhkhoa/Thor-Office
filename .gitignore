@@ -42,3 +42,6 @@ next-env.d.ts
 
 # giu file mau (khong chua khoa that)
 !.env.local.example
+
+# trạng thái chỉnh sửa phòng (cục bộ)
+/data/

@@ -1,5 +1,5 @@
-import { AGENTS, AGENT_BY_ID, type AgentId, type AgentState, type Job } from "@/lib/agentsMeta";
-import { LOGIC, planByKeywords } from "@/lib/agentLogic";
+import { AGENTS, AGENT_BY_ID, DEPT_BY_ID, type AgentId, type AgentState, type Job } from "@/lib/agentsMeta";
+import { LOGIC, WORKERS, planByKeywords } from "@/lib/agentLogic";
 import { askModel, runnerMode } from "@/lib/runner";
 import { Ctx } from "@/lib/thorData";
 
@@ -66,11 +66,11 @@ function set(job: Job, id: AgentId, patch: Partial<AgentState>) {
 }
 
 async function plan(job: Job): Promise<{ agent: AgentId; task: string }[]> {
-  const workers = (Object.keys(LOGIC) as AgentId[]).filter((id) => LOGIC[id].gather);
+  const workers = WORKERS;
   if (job.runner !== "sim") {
     try {
       const catalog = workers
-        .map((id) => `- ${id}: ${AGENT_BY_ID[id].name} — ${AGENT_BY_ID[id].branch}`)
+        .map((id) => `- ${id}: ${DEPT_BY_ID[AGENT_BY_ID[id].dept].name} · ${AGENT_BY_ID[id].name} — ${AGENT_BY_ID[id].branch}`)
         .join("\n");
       const text = await askModel(
         LOGIC.commander.system,
@@ -152,7 +152,10 @@ async function run(job: Job): Promise<void> {
     .map((p) => ({ p, s: job.agents[p.agent] }))
     .filter(({ s }) => s.status === "done" || s.status === "error");
   const body = parts
-    .map(({ p, s }) => `### ${AGENT_BY_ID[p.agent].name}\n${s.status === "done" ? s.result : `⚠️ Không lấy được: ${s.error}`}`)
+    .map(({ p, s }) => {
+      const m = AGENT_BY_ID[p.agent];
+      return `### ${DEPT_BY_ID[m.dept].name} · ${m.name}\n${s.status === "done" ? s.result : `⚠️ Không lấy được: ${s.error}`}`;
+    })
     .join("\n\n");
 
   let final: string;

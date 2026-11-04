@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Đọc dữ liệu Thor — CHỈ ĐỌC (GET), chỉ vài bảng được phép. Các AI KHÔNG BAO GIỜ ghi
- * được dữ liệu Thor: không có hàm ghi nào ở đây.
+ * Đọc dữ liệu Thor — CHỈ ĐỌC (GET), chỉ các bảng trong danh sách cho phép. Các AI KHÔNG
+ * BAO GIỜ ghi được dữ liệu Thor: không có hàm ghi nào ở đây.
  *
  * Khoá Supabase lấy từ .env.local của Thor (mặc định ../Thor/.env.local, đổi bằng biến
  * THOR_ENV_PATH). Khoá chỉ nằm trên máy chủ cục bộ, KHÔNG bao giờ gửi xuống trình duyệt
@@ -12,23 +12,39 @@ import path from "node:path";
 const ALLOWED = new Set([
   "orders",
   "staff",
+  "profiles",
   "qc_reviews",
   "qc_complaints",
+  "qc_monthly_reviews",
+  "qc_settings",
   "order_appointments",
   "reader_hours",
+  "salary_advances",
+  "salary_bonuses",
+  "operating_costs",
+  "package_prices",
+  "profit_settings",
+  "today_revenue_settings",
+  "activity_log",
 ]);
 
 type Env = { url: string; key: string };
 let cached: Env | null | undefined;
 
+function envPath(): string {
+  return process.env.THOR_ENV_PATH ?? path.resolve(process.cwd(), "..", "Thor", ".env.local");
+}
+
+/** Thư mục gốc của dự án Thor (chứa .env.local) — để các AI đọc mã nguồn. */
+export function thorRoot(): string {
+  return path.dirname(envPath());
+}
+
 function loadEnv(): Env | null {
   if (cached !== undefined) return cached;
-  const p =
-    process.env.THOR_ENV_PATH ??
-    path.resolve(process.cwd(), "..", "Thor", ".env.local");
   try {
     const map: Record<string, string> = {};
-    for (const line of fs.readFileSync(p, "utf8").split(/\r?\n/)) {
+    for (const line of fs.readFileSync(envPath(), "utf8").split(/\r?\n/)) {
       const t = line.trim();
       if (!t || t.startsWith("#") || !t.includes("=")) continue;
       const i = t.indexOf("=");
@@ -50,15 +66,20 @@ export function thorConnected(): boolean {
   return loadEnv() !== null;
 }
 
-/** Nạp hết các dòng (phân trang) của 1 truy vấn. `query` ĐÃ gồm `order=id.asc`. */
-export async function fetchAll<T>(table: string, query: string): Promise<T[]> {
-  if (!ALLOWED.has(table)) throw new Error(`Bảng "${table}" không nằm trong danh sách được đọc.`);
+function needEnv(): Env {
   const env = loadEnv();
   if (!env) {
     throw new Error(
       "Chưa kết nối được dữ liệu Thor (không đọc được .env.local của Thor). Đặt biến THOR_ENV_PATH trỏ tới file đó."
     );
   }
+  return env;
+}
+
+/** Nạp hết các dòng (phân trang) của 1 truy vấn. `query` ĐÃ gồm `order=id.asc`. */
+export async function fetchAll<T>(table: string, query: string): Promise<T[]> {
+  if (!ALLOWED.has(table)) throw new Error(`Bảng "${table}" không nằm trong danh sách được đọc.`);
+  const env = needEnv();
   const out: T[] = [];
   const page = 1000;
   for (let off = 0; off <= 50000; off += page) {
@@ -73,6 +94,46 @@ export async function fetchAll<T>(table: string, query: string): Promise<T[]> {
     const rows = (await res.json()) as T[];
     out.push(...rows);
     if (rows.length < page) break;
+  }
+  return out;
+}
+
+/** Đếm số dòng của 1 bảng (không tải dữ liệu) — dùng để theo dõi dung lượng/tải. */
+export async function countRows(table: string, filter = ""): Promise<number> {
+  if (!ALLOWED.has(table)) throw new Error(`Bảng "${table}" không nằm trong danh sách được đọc.`);
+  const env = needEnv();
+  const res = await fetch(`${env.url}/rest/v1/${table}?select=id${filter ? `&${filter}` : ""}&limit=1`, {
+    headers: { apikey: env.key, Authorization: `Bearer ${env.key}`, Prefer: "count=exact" },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Đếm bảng ${table} lỗi (${res.status}).`);
+  const range = res.headers.get("content-range") ?? "";
+  const total = Number(range.split("/")[1]);
+  return Number.isFinite(total) ? total : 0;
+}
+
+export type AuthUser = {
+  id: string;
+  email: string | null;
+  created_at: string;
+  last_sign_in_at: string | null;
+  banned_until: string | null;
+};
+
+/** Danh sách tài khoản đăng nhập (chỉ ĐỌC: email, lần đăng nhập gần nhất, tình trạng tạm ngưng). */
+export async function fetchAuthUsers(): Promise<AuthUser[]> {
+  const env = needEnv();
+  const out: AuthUser[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(`${env.url}/auth/v1/admin/users?page=${page}&per_page=1000`, {
+      headers: { apikey: env.key, Authorization: `Bearer ${env.key}` },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Đọc danh sách đăng nhập lỗi (${res.status}).`);
+    const json = (await res.json()) as { users?: AuthUser[] };
+    const users = json.users ?? [];
+    out.push(...users);
+    if (users.length < 1000) break;
   }
   return out;
 }

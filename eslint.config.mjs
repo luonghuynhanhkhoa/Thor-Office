@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Script Node dùng 1 lần (tạo logo) — không phải mã app.
+    "scripts/**",
   ]),
 ]);
 
